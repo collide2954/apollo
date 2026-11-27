@@ -38,7 +38,10 @@ mod tests {
         let mut err = Vec::new();
         let code = run(["apollo", "--help"], &mut out, &mut err);
         assert_eq!(code, ExitCode::SUCCESS);
-        assert_eq!(String::from_utf8_lossy(&out), "apollo 0.1.0\n");
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            format!("apollo {}\n", env!("CARGO_PKG_VERSION"))
+        );
         assert_eq!(String::from_utf8_lossy(&err), "");
     }
 
@@ -48,7 +51,10 @@ mod tests {
         let mut err = Vec::new();
         let code = run(["apollo", "--version"], &mut out, &mut err);
         assert_eq!(code, ExitCode::SUCCESS);
-        assert_eq!(String::from_utf8_lossy(&out), "0.1.0\n");
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            format!("{}\n", env!("CARGO_PKG_VERSION"))
+        );
         assert_eq!(String::from_utf8_lossy(&err), "");
     }
 

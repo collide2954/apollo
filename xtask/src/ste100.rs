@@ -93,9 +93,11 @@ pub fn check_root(root: &Path) -> io::Result<Vec<Violation>> {
 
 pub fn collect_doc_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    let readme = root.join("README.md");
-    if readme.is_file() {
-        files.push(readme);
+    for top_level in ["README.md", "CHANGELOG.md"] {
+        let candidate = root.join(top_level);
+        if candidate.is_file() {
+            files.push(candidate);
+        }
     }
     let docs_dir = root.join("docs");
     if docs_dir.is_dir() {

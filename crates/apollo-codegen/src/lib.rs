@@ -396,7 +396,10 @@ impl<'a> DeclLowerer<'a> {
             | Term::Unit
             | Term::Void
             | Term::Bool
-            | Term::Nat => Err(CodegenError::UnsupportedExpr {
+            | Term::Nat
+            | Term::Data { .. }
+            | Term::Ctor { .. }
+            | Term::DataElim { .. } => Err(CodegenError::UnsupportedExpr {
                 decl: self.decl_name.clone(),
             }),
         }

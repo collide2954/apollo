@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::cubical::{Cof, Dim, DimVar};
+use crate::inductive::InductiveId;
 use crate::level::Level;
 use crate::multiplicity::Multiplicity;
 use crate::term::{CofTerm, DeBruijnLevel, Index, Term, TermArena, TermId};
@@ -200,6 +201,25 @@ impl DoubleClosure {
 }
 
 #[derive(Debug, Clone)]
+pub struct MultiClosure {
+    env: Env,
+    body: TermId,
+}
+
+impl MultiClosure {
+    #[must_use]
+    pub const fn new(env: Env, body: TermId) -> Self {
+        Self { env, body }
+    }
+
+    pub fn apply_many(&self, arena: &TermArena, args: &[Value]) -> Result<Value, EvalError> {
+        let mut next = self.env.clone();
+        next.extend(args.iter().cloned());
+        eval(arena, &next, self.body)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Neutral {
     Var(DeBruijnLevel),
     App {
@@ -248,6 +268,13 @@ pub enum Neutral {
         step: DoubleClosure,
         scrut: Arc<Self>,
     },
+    DataElim {
+        id: InductiveId,
+        params: Vec<Value>,
+        motive: Closure,
+        branches: Vec<MultiClosure>,
+        scrut: Arc<Self>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +315,16 @@ pub enum Value {
     Nat,
     Zero,
     Succ(Arc<Self>),
+    Data {
+        id: InductiveId,
+        params: Vec<Self>,
+    },
+    Ctor {
+        id: InductiveId,
+        ctor: u32,
+        params: Vec<Self>,
+        args: Vec<Self>,
+    },
     Neutral(Arc<Neutral>),
 }
 
@@ -484,7 +521,131 @@ fn eval_inductive(
             let step_cl = DoubleClosure::new(env.to_vec(), *step);
             eval_nat_elim(arena, &motive_cl, &base_val, &step_cl, scrut_val)
         }
+        Term::Data { .. } | Term::Ctor { .. } | Term::DataElim { .. } => {
+            eval_data_term(arena, env, id, term)
+        }
         _ => Err(EvalError::InvalidTermId(id)),
+    }
+}
+
+fn eval_data_term(
+    arena: &TermArena,
+    env: &[Value],
+    id: TermId,
+    term: &Term,
+) -> Result<Value, EvalError> {
+    match term {
+        Term::Data { id: did, params } => {
+            let mut param_vals = Vec::with_capacity(params.len());
+            for &p in params {
+                param_vals.push(eval(arena, env, p)?);
+            }
+            Ok(Value::Data {
+                id: *did,
+                params: param_vals,
+            })
+        }
+        Term::Ctor {
+            id: did,
+            ctor,
+            params,
+            args,
+        } => {
+            let mut param_vals = Vec::with_capacity(params.len());
+            for &p in params {
+                param_vals.push(eval(arena, env, p)?);
+            }
+            let mut arg_vals = Vec::with_capacity(args.len());
+            for &a in args {
+                arg_vals.push(eval(arena, env, a)?);
+            }
+            Ok(Value::Ctor {
+                id: *did,
+                ctor: *ctor,
+                params: param_vals,
+                args: arg_vals,
+            })
+        }
+        Term::DataElim {
+            id: did,
+            params,
+            motive,
+            branches,
+            scrut,
+        } => {
+            let mut param_vals = Vec::with_capacity(params.len());
+            for &p in params {
+                param_vals.push(eval(arena, env, p)?);
+            }
+            let motive_cl = Closure::new(env.to_vec(), *motive);
+            let branch_cls: Vec<MultiClosure> = branches
+                .iter()
+                .map(|&b| MultiClosure::new(env.to_vec(), b))
+                .collect();
+            let scrut_val = eval(arena, env, *scrut)?;
+            eval_data_elim(arena, *did, &param_vals, &motive_cl, &branch_cls, scrut_val)
+        }
+        _ => Err(EvalError::InvalidTermId(id)),
+    }
+}
+
+fn eval_data_elim(
+    arena: &TermArena,
+    id: InductiveId,
+    params: &[Value],
+    motive: &Closure,
+    branches: &[MultiClosure],
+    scrut: Value,
+) -> Result<Value, EvalError> {
+    match scrut {
+        Value::Ctor {
+            id: c_id,
+            ctor,
+            args,
+            ..
+        } if c_id == id => {
+            let Some(decl) = arena.get_inductive(id) else {
+                return Ok(Value::Ctor {
+                    id: c_id,
+                    ctor,
+                    params: params.to_vec(),
+                    args,
+                });
+            };
+            let Some(ctor_decl) = decl.ctors.get(ctor as usize) else {
+                return Ok(Value::Ctor {
+                    id: c_id,
+                    ctor,
+                    params: params.to_vec(),
+                    args,
+                });
+            };
+            let Some(branch) = branches.get(ctor as usize) else {
+                return Ok(Value::Ctor {
+                    id: c_id,
+                    ctor,
+                    params: params.to_vec(),
+                    args,
+                });
+            };
+            let mut full_args = Vec::with_capacity(ctor_decl.branch_arity());
+            full_args.extend(args.iter().cloned());
+            for (arg, field) in args.iter().zip(&ctor_decl.fields) {
+                if field.is_recursive {
+                    let ih = eval_data_elim(arena, id, params, motive, branches, arg.clone())?;
+                    full_args.push(ih);
+                }
+            }
+            branch.apply_many(arena, &full_args)
+        }
+        Value::Neutral(neutral) => Ok(Value::Neutral(Arc::new(Neutral::DataElim {
+            id,
+            params: params.to_vec(),
+            motive: motive.clone(),
+            branches: branches.to_vec(),
+            scrut: neutral,
+        }))),
+        other => Ok(other),
     }
 }
 
@@ -646,6 +807,7 @@ pub fn coe_line(
     let probe = Dim::Var(DimVar(u32::MAX));
     match line.apply(arena, probe)? {
         Value::Universe(_) | Value::Unit | Value::Void | Value::Bool | Value::Nat => Ok(term),
+        Value::Data { params, .. } if params.is_empty() => Ok(term),
         Value::Pi { mult, .. } => Ok(Value::Lam {
             mult,
             body: Closure::CoePi {
@@ -807,6 +969,29 @@ pub fn quote(arena: &mut TermArena, depth: u32, value: &Value) -> Result<TermId,
             let pred_id = quote(arena, depth, pred)?;
             Ok(arena.succ(pred_id))
         }
+        Value::Data { id, params } => {
+            let mut param_ids = Vec::with_capacity(params.len());
+            for p in params {
+                param_ids.push(quote(arena, depth, p)?);
+            }
+            Ok(arena.data(*id, param_ids))
+        }
+        Value::Ctor {
+            id,
+            ctor,
+            params,
+            args,
+        } => {
+            let mut param_ids = Vec::with_capacity(params.len());
+            for p in params {
+                param_ids.push(quote(arena, depth, p)?);
+            }
+            let mut arg_ids = Vec::with_capacity(args.len());
+            for a in args {
+                arg_ids.push(quote(arena, depth, a)?);
+            }
+            Ok(arena.ctor(*id, *ctor, param_ids, arg_ids))
+        }
         Value::Neutral(neutral) => quote_neutral(arena, depth, neutral),
     }
 }
@@ -938,8 +1123,49 @@ fn quote_neutral_inductive(
             let scrut_id = quote_neutral(arena, depth, scrut)?;
             Ok(arena.nat_elim(m_id, base_id, step_id, scrut_id))
         }
+        Neutral::DataElim {
+            id,
+            params,
+            motive,
+            branches,
+            scrut,
+        } => quote_data_elim(arena, depth, *id, params, motive, branches, scrut),
         _ => Ok(arena.tt()),
     }
+}
+
+fn quote_data_elim(
+    arena: &mut TermArena,
+    depth: u32,
+    id: InductiveId,
+    params: &[Value],
+    motive: &Closure,
+    branches: &[MultiClosure],
+    scrut: &Neutral,
+) -> Result<TermId, EvalError> {
+    let mut param_ids = Vec::with_capacity(params.len());
+    for p in params {
+        param_ids.push(quote(arena, depth, p)?);
+    }
+    let m_val = motive.apply(arena, Value::var(DeBruijnLevel(depth)))?;
+    let m_id = quote(arena, depth + 1, &m_val)?;
+    let arities: Vec<u32> = arena.get_inductive(id).map_or_else(Vec::new, |decl| {
+        decl.ctors
+            .iter()
+            .map(|c| u32::try_from(c.branch_arity()).unwrap_or(0))
+            .collect()
+    });
+    let mut branch_ids = Vec::with_capacity(branches.len());
+    for (branch, arity) in branches.iter().zip(arities) {
+        let mut vars = Vec::with_capacity(arity as usize);
+        for offset in 0..arity {
+            vars.push(Value::var(DeBruijnLevel(depth + offset)));
+        }
+        let b_val = branch.apply_many(arena, &vars)?;
+        branch_ids.push(quote(arena, depth + arity, &b_val)?);
+    }
+    let scrut_id = quote_neutral(arena, depth, scrut)?;
+    Ok(arena.data_elim(id, param_ids, m_id, branch_ids, scrut_id))
 }
 
 fn quote_cof(arena: &mut TermArena, depth: u32, cof: &Cof) -> Result<CofTerm, EvalError> {
@@ -1071,8 +1297,57 @@ pub fn conv(arena: &TermArena, depth: u32, lhs: &Value, rhs: &Value) -> Result<b
         }
         (Value::Succ(p1), Value::Succ(p2)) => conv(arena, depth, p1, p2),
         (Value::Neutral(n1), Value::Neutral(n2)) => conv_neutral(arena, depth, n1, n2),
+        (l @ (Value::Data { .. } | Value::Ctor { .. }), r) => conv_data_value(arena, depth, l, r),
         _ => Ok(false),
     }
+}
+
+fn conv_data_value(
+    arena: &TermArena,
+    depth: u32,
+    lhs: &Value,
+    rhs: &Value,
+) -> Result<bool, EvalError> {
+    match (lhs, rhs) {
+        (Value::Data { id: i1, params: p1 }, Value::Data { id: i2, params: p2 }) => {
+            Ok(i1 == i2 && conv_slice(arena, depth, p1, p2)?)
+        }
+        (
+            Value::Ctor {
+                id: i1,
+                ctor: c1,
+                params: p1,
+                args: a1,
+            },
+            Value::Ctor {
+                id: i2,
+                ctor: c2,
+                params: p2,
+                args: a2,
+            },
+        ) => Ok(i1 == i2
+            && c1 == c2
+            && conv_slice(arena, depth, p1, p2)?
+            && conv_slice(arena, depth, a1, a2)?),
+        _ => Ok(false),
+    }
+}
+
+fn conv_slice(
+    arena: &TermArena,
+    depth: u32,
+    lhs: &[Value],
+    rhs: &[Value],
+) -> Result<bool, EvalError> {
+    if lhs.len() != rhs.len() {
+        return Ok(false);
+    }
+    for (l, r) in lhs.iter().zip(rhs) {
+        if !conv(arena, depth, l, r)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn conv_neutral(
@@ -1231,8 +1506,68 @@ fn conv_neutral_inductive(
             let v2 = st2.apply2(arena, k_var, ih_var)?;
             conv(arena, depth + 2, &v1, &v2)
         }
+        (
+            Neutral::DataElim {
+                id: i1,
+                params: p1,
+                motive: m1,
+                branches: b1,
+                scrut: s1,
+            },
+            Neutral::DataElim {
+                id: i2,
+                params: p2,
+                motive: m2,
+                branches: b2,
+                scrut: s2,
+            },
+        ) => conv_data_elim(arena, depth, (*i1, p1, m1, b1, s1), (*i2, p2, m2, b2, s2)),
         _ => Ok(false),
     }
+}
+
+type DataElimParts<'a> = (
+    InductiveId,
+    &'a [Value],
+    &'a Closure,
+    &'a [MultiClosure],
+    &'a Neutral,
+);
+
+fn conv_data_elim(
+    arena: &TermArena,
+    depth: u32,
+    lhs: DataElimParts<'_>,
+    rhs: DataElimParts<'_>,
+) -> Result<bool, EvalError> {
+    let (i1, p1, m1, b1, s1) = lhs;
+    let (i2, p2, m2, b2, s2) = rhs;
+    if i1 != i2
+        || b1.len() != b2.len()
+        || !conv_neutral(arena, depth, s1, s2)?
+        || !conv_slice(arena, depth, p1, p2)?
+        || !conv_closures(arena, depth, Value::var(DeBruijnLevel(depth)), m1, m2)?
+    {
+        return Ok(false);
+    }
+    let arities: Vec<u32> = arena.get_inductive(i1).map_or_else(Vec::new, |decl| {
+        decl.ctors
+            .iter()
+            .map(|c| u32::try_from(c.branch_arity()).unwrap_or(0))
+            .collect()
+    });
+    for ((br1, br2), arity) in b1.iter().zip(b2).zip(arities) {
+        let mut vars = Vec::with_capacity(arity as usize);
+        for offset in 0..arity {
+            vars.push(Value::var(DeBruijnLevel(depth + offset)));
+        }
+        let v1 = br1.apply_many(arena, &vars)?;
+        let v2 = br2.apply_many(arena, &vars)?;
+        if !conv(arena, depth + arity, &v1, &v2)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub fn subtype(arena: &TermArena, depth: u32, sub: &Value, sup: &Value) -> Result<bool, EvalError> {

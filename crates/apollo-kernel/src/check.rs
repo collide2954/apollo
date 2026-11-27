@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::cubical::{Cof, Dim, Face};
+use crate::inductive::{CtorDecl, InductiveId};
 use crate::level::Level;
 use crate::multiplicity::{Multiplicity, UsageError, UsageVec};
 use crate::nbe::{Closure, Env, EvalError, Value, conv, eval, eval_cof, proj_fst, subtype};
@@ -35,6 +36,17 @@ pub enum TypeError {
     },
     ErasedProjection,
     TypeMismatch,
+    InvalidInductiveId(InductiveId),
+    InvalidCtorIndex {
+        id: InductiveId,
+        ctor: u32,
+    },
+    ArityMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    NonStrictlyPositive,
+    UniverseLevelTooHigh,
 }
 
 impl From<EvalError> for TypeError {
@@ -85,6 +97,19 @@ impl fmt::Display for TypeError {
                 f.write_str("cannot project erased pair component at runtime")
             }
             Self::TypeMismatch => f.write_str("type mismatch"),
+            Self::InvalidInductiveId(id) => write!(f, "unknown inductive type {id}"),
+            Self::InvalidCtorIndex { id, ctor } => {
+                write!(f, "unknown constructor {ctor} for inductive type {id}")
+            }
+            Self::ArityMismatch { expected, actual } => {
+                write!(f, "arity mismatch: expected {expected}, got {actual}")
+            }
+            Self::NonStrictlyPositive => {
+                f.write_str("inductive type occurs in a non-strictly-positive position")
+            }
+            Self::UniverseLevelTooHigh => {
+                f.write_str("constructor field universe exceeds inductive type universe")
+            }
         }
     }
 }
@@ -106,6 +131,10 @@ impl Ctx {
     #[must_use]
     pub fn depth(&self) -> u32 {
         u32::try_from(self.types.len()).unwrap_or(u32::MAX)
+    }
+
+    pub(crate) fn env(&self) -> &[Value] {
+        &self.env
     }
 
     pub fn push(&mut self, ty: Value) -> Value {
@@ -578,7 +607,265 @@ fn infer_inductive(
             step,
             scrut,
         } => infer_nat_elim(arena, ctx, mode, *motive, *base, *step, *scrut),
+        Term::Data { id, params } => infer_data(arena, ctx, depth, *id, params),
+        Term::Ctor {
+            id,
+            ctor,
+            params,
+            args,
+        } => infer_ctor(
+            arena,
+            ctx,
+            mode,
+            depth,
+            &CtorSpec {
+                id: *id,
+                ctor: *ctor,
+                params,
+                args,
+            },
+        ),
+        Term::DataElim {
+            id,
+            params,
+            motive,
+            branches,
+            scrut,
+        } => infer_data_elim(
+            arena,
+            ctx,
+            mode,
+            &DataElimSpec {
+                id: *id,
+                params,
+                motive: *motive,
+                branches,
+                scrut: *scrut,
+            },
+        ),
         _ => Err(TypeError::TypeMismatch),
+    }
+}
+
+struct CtorSpec<'a> {
+    id: InductiveId,
+    ctor: u32,
+    params: &'a [TermId],
+    args: &'a [TermId],
+}
+
+struct DataElimSpec<'a> {
+    id: InductiveId,
+    params: &'a [TermId],
+    motive: TermId,
+    branches: &'a [TermId],
+    scrut: TermId,
+}
+
+struct BranchSpec<'a> {
+    id: InductiveId,
+    ctor: u32,
+    ctor_decl: &'a CtorDecl,
+    param_vals: &'a [Value],
+    motive_cl: &'a Closure,
+    branch: TermId,
+}
+
+fn check_data_params(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    id: InductiveId,
+    params: &[TermId],
+) -> Result<Vec<Value>, TypeError> {
+    let decl = arena
+        .get_inductive(id)
+        .ok_or(TypeError::InvalidInductiveId(id))?;
+    if params.len() != decl.params.len() {
+        return Err(TypeError::ArityMismatch {
+            expected: decl.params.len(),
+            actual: params.len(),
+        });
+    }
+    let mut param_vals = Vec::with_capacity(params.len());
+    for (&arg, pdecl) in params.iter().zip(&decl.params) {
+        let expected_ty = eval(arena, &param_vals, pdecl.ty)?;
+        let _ = check(arena, ctx, Multiplicity::Zero, arg, &expected_ty)?;
+        param_vals.push(eval(arena, &ctx.env, arg)?);
+    }
+    Ok(param_vals)
+}
+
+fn infer_data(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    depth: usize,
+    id: InductiveId,
+    params: &[TermId],
+) -> Result<(Value, UsageVec), TypeError> {
+    let decl = arena
+        .get_inductive(id)
+        .ok_or(TypeError::InvalidInductiveId(id))?;
+    let _ = check_data_params(arena, ctx, id, params)?;
+    Ok((Value::Universe(decl.level.clone()), UsageVec::zero(depth)))
+}
+
+fn infer_ctor(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    depth: usize,
+    spec: &CtorSpec<'_>,
+) -> Result<(Value, UsageVec), TypeError> {
+    let decl = arena
+        .get_inductive(spec.id)
+        .ok_or(TypeError::InvalidInductiveId(spec.id))?;
+    let ctor_decl = decl
+        .ctors
+        .get(spec.ctor as usize)
+        .ok_or(TypeError::InvalidCtorIndex {
+            id: spec.id,
+            ctor: spec.ctor,
+        })?;
+    let param_vals = check_data_params(arena, ctx, spec.id, spec.params)?;
+    if spec.args.len() != ctor_decl.fields.len() {
+        return Err(TypeError::ArityMismatch {
+            expected: ctor_decl.fields.len(),
+            actual: spec.args.len(),
+        });
+    }
+    let mut field_env = param_vals.clone();
+    let mut total = UsageVec::zero(depth);
+    for (&arg, field) in spec.args.iter().zip(&ctor_decl.fields) {
+        let field_ty = eval(arena, &field_env, field.ty)?;
+        let u_arg = check(arena, ctx, mode.mul(field.mult), arg, &field_ty)?;
+        total = total.add(&u_arg)?;
+        field_env.push(eval(arena, &ctx.env, arg)?);
+    }
+    Ok((
+        Value::Data {
+            id: spec.id,
+            params: param_vals,
+        },
+        total,
+    ))
+}
+
+fn infer_data_elim(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    spec: &DataElimSpec<'_>,
+) -> Result<(Value, UsageVec), TypeError> {
+    let decl = arena
+        .get_inductive(spec.id)
+        .ok_or(TypeError::InvalidInductiveId(spec.id))?;
+    if spec.branches.len() != decl.ctors.len() {
+        return Err(TypeError::ArityMismatch {
+            expected: decl.ctors.len(),
+            actual: spec.branches.len(),
+        });
+    }
+    let param_vals = check_data_params(arena, ctx, spec.id, spec.params)?;
+    let data_ty = Value::Data {
+        id: spec.id,
+        params: param_vals.clone(),
+    };
+    let motive_cl = check_motive(arena, ctx, data_ty.clone(), spec.motive)?;
+    let u_scrut = check(arena, ctx, mode, spec.scrut, &data_ty)?;
+
+    let mut branch_usage: Option<UsageVec> = None;
+    for (c_idx, (ctor_decl, &branch)) in decl.ctors.iter().zip(spec.branches).enumerate() {
+        let ctor = u32::try_from(c_idx).unwrap_or(u32::MAX);
+        let u_branch = check_data_branch(
+            arena,
+            ctx,
+            mode,
+            &BranchSpec {
+                id: spec.id,
+                ctor,
+                ctor_decl,
+                param_vals: &param_vals,
+                motive_cl: &motive_cl,
+                branch,
+            },
+        )?;
+        branch_usage = match branch_usage {
+            None => Some(u_branch),
+            Some(acc) => Some(acc.join(&u_branch)?),
+        };
+    }
+
+    let total = match branch_usage {
+        Some(u_branches) => u_scrut.add(&u_branches)?,
+        None => u_scrut,
+    };
+    let scrut_val = eval(arena, &ctx.env, spec.scrut)?;
+    let res_ty = motive_cl.apply(arena, scrut_val)?;
+    Ok((res_ty, total))
+}
+
+fn check_data_branch(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    spec: &BranchSpec<'_>,
+) -> Result<UsageVec, TypeError> {
+    let mut field_env = spec.param_vals.to_vec();
+    let mut field_vars = Vec::with_capacity(spec.ctor_decl.fields.len());
+    for field in &spec.ctor_decl.fields {
+        let field_ty = eval(arena, &field_env, field.ty)?;
+        let f_var = ctx.push(field_ty);
+        field_env.push(f_var.clone());
+        field_vars.push(f_var);
+    }
+
+    let rec_count = spec.ctor_decl.recursive_count();
+    for (f_var, field) in field_vars.iter().zip(&spec.ctor_decl.fields) {
+        if field.is_recursive {
+            let ih_ty = spec.motive_cl.apply(arena, f_var.clone())?;
+            let _ = ctx.push(ih_ty);
+        }
+    }
+
+    let ctor_val = Value::Ctor {
+        id: spec.id,
+        ctor: spec.ctor,
+        params: spec.param_vals.to_vec(),
+        args: field_vars,
+    };
+    let branch_ty = spec.motive_cl.apply(arena, ctor_val)?;
+    let res = check(arena, ctx, mode, spec.branch, &branch_ty);
+    for _ in 0..(spec.ctor_decl.fields.len() + rec_count) {
+        ctx.pop();
+    }
+    let mut u_branch = res?;
+
+    let mut ih_usages = Vec::with_capacity(rec_count);
+    for _ in 0..rec_count {
+        ih_usages.push(u_branch.pop_last().unwrap_or(Multiplicity::Zero));
+    }
+    let mut ih_iter = ih_usages.into_iter();
+    for field in spec.ctor_decl.fields.iter().rev() {
+        let used_field = u_branch.pop_last().unwrap_or(Multiplicity::Zero);
+        let used = if field.is_recursive {
+            let used_ih = ih_iter.next().unwrap_or(Multiplicity::Zero);
+            used_field.add(used_ih)
+        } else {
+            used_field
+        };
+        let avail = mode.mul(field.mult);
+        if !used.fits_in(avail) {
+            return Err(TypeError::BinderUsageViolation {
+                used,
+                expected: avail,
+            });
+        }
+    }
+
+    if rec_count > 0 {
+        Ok(u_branch.scale(Multiplicity::Many))
+    } else {
+        Ok(u_branch)
     }
 }
 

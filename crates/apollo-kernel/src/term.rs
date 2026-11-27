@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::inductive::{InductiveDecl, InductiveId};
 use crate::level::Level;
 use crate::multiplicity::Multiplicity;
 
@@ -142,18 +143,66 @@ pub enum Term {
         step: TermId,
         scrut: TermId,
     },
+    Data {
+        id: InductiveId,
+        params: Vec<TermId>,
+    },
+    Ctor {
+        id: InductiveId,
+        ctor: u32,
+        params: Vec<TermId>,
+        args: Vec<TermId>,
+    },
+    DataElim {
+        id: InductiveId,
+        params: Vec<TermId>,
+        motive: TermId,
+        branches: Vec<TermId>,
+        scrut: TermId,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct TermArena {
     nodes: Vec<Term>,
     intern: HashMap<Term, TermId>,
+    inductives: Vec<InductiveDecl>,
 }
 
 impl TermArena {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn next_inductive_id(&self) -> InductiveId {
+        let raw = u32::try_from(self.inductives.len()).unwrap_or(u32::MAX);
+        InductiveId(raw)
+    }
+
+    #[must_use]
+    pub fn get_inductive(&self, id: InductiveId) -> Option<&InductiveDecl> {
+        self.inductives.get(id.raw() as usize)
+    }
+
+    #[must_use]
+    pub const fn inductive_count(&self) -> usize {
+        self.inductives.len()
+    }
+
+    pub(crate) fn push_inductive_raw(&mut self, decl: InductiveDecl) {
+        self.inductives.push(decl);
+    }
+
+    pub(crate) fn set_inductive_raw(&mut self, id: InductiveId, decl: InductiveDecl) {
+        if let Some(slot) = self.inductives.get_mut(id.raw() as usize) {
+            *slot = decl;
+        }
+    }
+
+    pub(crate) fn pop_inductive_raw(&mut self) {
+        let _ = self.inductives.pop();
     }
 
     #[must_use]
@@ -400,6 +449,45 @@ impl TermArena {
     }
 
     #[must_use]
+    pub fn data(&mut self, id: InductiveId, params: Vec<TermId>) -> TermId {
+        self.intern(Term::Data { id, params })
+    }
+
+    #[must_use]
+    pub fn ctor(
+        &mut self,
+        id: InductiveId,
+        ctor: u32,
+        params: Vec<TermId>,
+        args: Vec<TermId>,
+    ) -> TermId {
+        self.intern(Term::Ctor {
+            id,
+            ctor,
+            params,
+            args,
+        })
+    }
+
+    #[must_use]
+    pub fn data_elim(
+        &mut self,
+        id: InductiveId,
+        params: Vec<TermId>,
+        motive: TermId,
+        branches: Vec<TermId>,
+        scrut: TermId,
+    ) -> TermId {
+        self.intern(Term::DataElim {
+            id,
+            params,
+            motive,
+            branches,
+            scrut,
+        })
+    }
+
+    #[must_use]
     pub fn format_cof(&self, cof: &CofTerm) -> String {
         match cof {
             CofTerm::Top => "⊤".to_owned(),
@@ -563,6 +651,35 @@ impl TermArena {
                 self.format_term(*step),
                 self.format_term(*scrut)
             ),
+            Term::Data { id, params } => {
+                let ps: Vec<String> = params.iter().map(|p| self.format_term(*p)).collect();
+                format!("{id}({})", ps.join(", "))
+            }
+            Term::Ctor {
+                id,
+                ctor,
+                params,
+                args,
+            } => {
+                let ps: Vec<String> = params.iter().map(|p| self.format_term(*p)).collect();
+                let as_: Vec<String> = args.iter().map(|a| self.format_term(*a)).collect();
+                format!("{id}::c{ctor}[{}]({})", ps.join(", "), as_.join(", "))
+            }
+            Term::DataElim {
+                id,
+                motive,
+                branches,
+                scrut,
+                ..
+            } => {
+                let bs: Vec<String> = branches.iter().map(|b| self.format_term(*b)).collect();
+                format!(
+                    "data_elim({id}, {}, [{}], {})",
+                    self.format_term(*motive),
+                    bs.join(", "),
+                    self.format_term(*scrut)
+                )
+            }
             _ => String::new(),
         }
     }

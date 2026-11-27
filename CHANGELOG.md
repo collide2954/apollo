@@ -5,6 +5,15 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-27
+
+### Added
+
+- Add user-defined inductive data types, strict positivity checks, and recursive eliminators in `apollo-kernel`.
+- Add `enum` and `struct` declarations, constructor paths, struct literals, and field projections in `apollo-syntax` and `apollo-elab`.
+- Add `pub enum` and `pub struct` Rust extraction with conditional `alloc::boxed::Box` recursion and erased proof fields in `apollo-codegen`.
+- Add `examples/data.ap` with `Option`, `Point`, `VerifiedNat`, `List`, and `Tree` proofs and live Rust execution tests.
+
 ## [0.7.0] - 2026-11-27
 
 ### Added

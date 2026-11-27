@@ -982,6 +982,14 @@ pub fn r#match<A>(r#type: A) -> A {
                 |1 a, 1 b| (a, b)
             }
 
+            fn call_mk_pair(0 A: Type 0, 0 B: Type 0) -> (1 _: A, 1 _: B) -> Sigma(1 _: A, B) {
+                mk_pair(A, B)
+            }
+
+            fn pair_with_closure(0 A: Type 0, 1 x: A) -> Sigma(1 _: (1 _: A) -> A, A) {
+                (|1 a| a, x)
+            }
+
             fn nested_let(0 A: Type 0, ω x: A) -> Sigma(1 _: A, A) {
                 let ω y: A = x;
                 (({ let 1 z: A = y; z } : A), y)
@@ -1002,6 +1010,10 @@ pub fn r#match<A>(r#type: A) -> A {
             assert!(code.contains("f(a, b)"));
             assert!(code.contains("impl FnOnce(A, B) -> (A, B)"));
             assert!(code.contains("move |v0, v1| (v0, v1)"));
+            assert!(code.contains(
+                "pub fn call_mk_pair<A, B>() -> impl FnOnce(A, B) -> (A, B) {\n    mk_pair()\n}"
+            ));
+            assert!(code.contains("(move |v1| v1, x)"));
             assert!(code.contains("pub fn ignore_unused_ty<A>(x: A) -> A"));
         }
     }

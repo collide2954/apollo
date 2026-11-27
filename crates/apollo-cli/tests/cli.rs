@@ -127,7 +127,12 @@ fn binary_builds_extractable_example_to_valid_rust() {
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("cannot read"));
     }
+}
 
+#[test]
+#[cfg_attr(miri, ignore)]
+fn binary_checks_and_builds_arithmetic_and_data_examples() {
+    let bin = env!("CARGO_BIN_EXE_apollo");
     let arithmetic = examples_dir().join("arithmetic.ap");
     let arith_check = Command::new(bin).arg("check").arg(&arithmetic).output();
     assert!(arith_check.is_ok());
@@ -151,5 +156,30 @@ fn binary_builds_extractable_example_to_valid_rust() {
         let emitted = String::from_utf8_lossy(&output.stdout);
         assert!(emitted.contains("pub fn mul(n: u128, m: u128) -> u128"));
         assert!(!emitted.contains("add_zero_right"));
+    }
+
+    let data_ap = examples_dir().join("data.ap");
+    let data_check = Command::new(bin).arg("check").arg(&data_ap).output();
+    assert!(data_check.is_ok());
+    if let Ok(output) = data_check {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let data_build = Command::new(bin).arg("build").arg(&data_ap).output();
+    assert!(data_build.is_ok());
+    if let Ok(output) = data_build {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let emitted = String::from_utf8_lossy(&output.stdout);
+        assert!(emitted.contains("pub enum List<A>"));
+        assert!(emitted.contains("pub struct VerifiedNat"));
+        assert!(!emitted.contains("append_nil_right"));
     }
 }

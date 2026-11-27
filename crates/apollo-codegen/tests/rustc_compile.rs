@@ -230,3 +230,122 @@ fn extracted_inductive_arithmetic_compiles_and_executes_correctly() {
         );
     }
 }
+
+const DATA_DRIVER: &str = r#"
+    use apollo_data::{List, Option as AOpt, PairPoint, Point, Tree};
+
+    fn list_to_vec<T>(mut xs: List<T>) -> Vec<T> {
+        let mut out = Vec::new();
+        while let List::Cons(h, t) = xs {
+            out.push(h);
+            xs = *t;
+        }
+        out
+    }
+
+    fn main() {
+        assert_eq!(apollo_data::unwrap_or(AOpt::None, 7_u128), 7);
+        assert_eq!(apollo_data::unwrap_or(AOpt::Some(42_u128), 7), 42);
+        let mapped = apollo_data::map_opt(AOpt::Some(20_u128), |n| n + 22);
+        assert_eq!(apollo_data::unwrap_or(mapped, 0), 42);
+
+        let pt = apollo_data::swap_point(Point { x: String::from("a"), y: String::from("b") });
+        assert_eq!((pt.x.as_str(), pt.y.as_str()), ("b", "a"));
+        assert_eq!(apollo_data::get_x(PairPoint { x: 9_u128, y: 1 }), 9);
+        assert_eq!(apollo_data::mk_verified(13).val, 13);
+
+        let l1 = List::Cons(1_u128, Box::new(List::Cons(2, Box::new(List::Nil))));
+        let l2 = List::Cons(3_u128, Box::new(List::Nil));
+        let joined = apollo_data::append(l1, l2);
+        let doubled = apollo_data::list_map(joined, |n| n * 10);
+        assert_eq!(list_to_vec(doubled), vec![10, 20, 30]);
+
+        let leaf = || Box::new(Tree::Leaf);
+        let right = Box::new(Tree::Node(leaf(), 30_u128, leaf()));
+        let root = Tree::Node(Box::new(Tree::Node(leaf(), 5_u128, leaf())), 7_u128, right);
+        assert_eq!(apollo_data::tree_sum(root), 42);
+    }
+"#;
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn extracted_adts_compile_and_execute_correctly() {
+    let data_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("examples")
+        .join("data.ap");
+    let src = fs::read_to_string(&data_path);
+    assert!(src.is_ok(), "cannot read examples/data.ap");
+    let Ok(src) = src else {
+        return;
+    };
+
+    let rust_code = apollo_codegen::compile_source(&src);
+    assert!(rust_code.is_ok(), "codegen failed: {:?}", rust_code.err());
+    let Ok(code) = rust_code else {
+        return;
+    };
+
+    let tmp_dir = std::env::temp_dir().join(format!("apollo-codegen-data-{}", std::process::id()));
+    let _ = fs::create_dir_all(&tmp_dir);
+    let lib_rs = tmp_dir.join("data.rs");
+    let rlib_path = tmp_dir.join("libapollo_data.rlib");
+    let driver_rs = tmp_dir.join("driver.rs");
+    let driver_exe = tmp_dir.join(if cfg!(windows) {
+        "driver.exe"
+    } else {
+        "driver"
+    });
+    assert!(fs::write(&lib_rs, &code).is_ok());
+    assert!(fs::write(&driver_rs, DATA_DRIVER).is_ok());
+
+    let lib_out = Command::new("rustc")
+        .args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "-D",
+            "warnings",
+            "--crate-name",
+            "apollo_data",
+            "-o",
+        ])
+        .arg(&rlib_path)
+        .arg(&lib_rs)
+        .output();
+    assert!(lib_out.is_ok());
+    if let Ok(res) = lib_out {
+        assert!(
+            res.status.success(),
+            "rustc rejected data lib:\n{code}\nstderr:\n{}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+    }
+
+    let bin_out = Command::new("rustc")
+        .args(["--edition=2024", "-D", "warnings", "--extern"])
+        .arg(format!("apollo_data={}", rlib_path.display()))
+        .arg("-o")
+        .arg(&driver_exe)
+        .arg(&driver_rs)
+        .output();
+    assert!(bin_out.is_ok());
+    if let Ok(res) = bin_out {
+        assert!(
+            res.status.success(),
+            "rustc rejected data driver:\n{}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+    }
+
+    let run_out = Command::new(&driver_exe).output();
+    let _ = fs::remove_dir_all(&tmp_dir);
+    assert!(run_out.is_ok());
+    if let Ok(res) = run_out {
+        assert!(
+            res.status.success(),
+            "extracted data binary failed:\n{}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+    }
+}

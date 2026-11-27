@@ -1,0 +1,105 @@
+fn add(1 n: Nat, 1 m: Nat) -> Nat {
+    match n {
+        zero => m,
+        succ(_, acc) => succ(acc),
+    }
+}
+
+theorem add_zero_right(0 n: Nat) -> Path(_ => Nat, add(n, zero), n) {
+    match n as |x| Path(_ => Nat, add(x, zero), x) {
+        zero => <i> zero,
+        succ(k, ih) => <i> succ(ih @ i),
+    }
+}
+
+enum Option(0 A: Type 0) {
+    None,
+    Some(1 val: A),
+}
+
+struct Point(0 A: Type 0) {
+    1 x: A,
+    1 y: A,
+}
+
+struct PairPoint(0 A: Type 0) {
+    ω x: A,
+    ω y: A,
+}
+
+struct VerifiedNat {
+    1 val: Nat,
+    0 ok: Path(_ => Nat, add(val, zero), val),
+}
+
+enum List(0 A: Type 0) {
+    Nil,
+    Cons(1 head: A, 1 tail: List(A)),
+}
+
+enum Tree(0 A: Type 0) {
+    Leaf,
+    Node(1 left: Tree(A), 1 val: A, 1 right: Tree(A)),
+}
+
+fn unwrap_or(0 A: Type 0, 1 o: Option(A), ω d: A) -> A {
+    match o {
+        Option::None => d,
+        Option::Some(v) => v,
+    }
+}
+
+fn map_opt(0 A: Type 0, 0 B: Type 0, 1 o: Option(A), ω f: (1 _: A) -> B) -> Option(B) {
+    match o {
+        Option::None => Option::None,
+        Option::Some(v) => Option::Some(f(v)),
+    }
+}
+
+fn swap_point(0 A: Type 0, 1 p: Point(A)) -> Point(A) {
+    match p {
+        Point { x, y } => Point { x: y, y: x },
+    }
+}
+
+fn get_x(0 A: Type 0, ω p: PairPoint(A)) -> A {
+    p.x
+}
+
+fn mk_verified(1 n: Nat) -> VerifiedNat {
+    VerifiedNat {
+        val: n,
+        ok: add_zero_right(n),
+    }
+}
+
+fn append(0 A: Type 0, 1 xs: List(A), ω ys: List(A)) -> List(A) {
+    match xs {
+        List::Nil => ys,
+        List::Cons(h, _, ih) => List::Cons(h, ih),
+    }
+}
+
+theorem append_nil_right(
+    0 A: Type 0,
+    0 xs: List(A),
+) -> Path(_ => List(A), append(A, xs, List::Nil), xs) {
+    match xs as |l| Path(_ => List(A), append(A, l, List::Nil), l) {
+        List::Nil => <i> List::Nil,
+        List::Cons(h, t, ih) => <i> List::Cons(h, ih @ i),
+    }
+}
+
+fn list_map(0 A: Type 0, 0 B: Type 0, 1 xs: List(A), ω f: (1 _: A) -> B) -> List(B) {
+    match xs {
+        List::Nil => List::Nil,
+        List::Cons(h, _, ih) => List::Cons(f(h), ih),
+    }
+}
+
+fn tree_sum(1 t: Tree(Nat)) -> Nat {
+    match t {
+        Tree::Leaf => zero,
+        Tree::Node(_, v, _, ihl, ihr) => add(v, add(ihl, ihr)),
+    }
+}

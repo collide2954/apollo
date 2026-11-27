@@ -16,6 +16,11 @@ pub enum RustType {
     Void,
     Bool,
     Nat,
+    Data {
+        name: String,
+        args: Vec<Self>,
+    },
+    Boxed(Box<Self>),
     Tuple(Box<Self>, Box<Self>),
     Callable {
         kind: FnKind,
@@ -31,6 +36,12 @@ impl RustType {
                 let _ = out.insert(name.clone());
             }
             Self::Unit | Self::Void | Self::Bool | Self::Nat => {}
+            Self::Data { args, .. } => {
+                for arg in args {
+                    arg.collect_type_params(out);
+                }
+            }
+            Self::Boxed(inner) => inner.collect_type_params(out),
             Self::Tuple(fst, snd) => {
                 fst.collect_type_params(out);
                 snd.collect_type_params(out);
@@ -54,7 +65,7 @@ impl RustType {
         match self {
             Self::Unit | Self::Void | Self::Bool | Self::Nat => true,
             Self::Tuple(fst, snd) => fst.is_copy() && snd.is_copy(),
-            Self::Named(_) | Self::Callable { .. } => false,
+            Self::Named(_) | Self::Data { .. } | Self::Boxed(_) | Self::Callable { .. } => false,
         }
     }
 
@@ -65,6 +76,24 @@ impl RustType {
             Self::Void => out.push_str("core::convert::Infallible"),
             Self::Bool => out.push_str("bool"),
             Self::Nat => out.push_str("u128"),
+            Self::Data { name, args } => {
+                out.push_str(name);
+                if !args.is_empty() {
+                    out.push('<');
+                    for (idx, arg) in args.iter().enumerate() {
+                        if idx > 0 {
+                            out.push_str(", ");
+                        }
+                        arg.write_to(out);
+                    }
+                    out.push('>');
+                }
+            }
+            Self::Boxed(inner) => {
+                out.push_str("Box<");
+                inner.write_to(out);
+                out.push('>');
+            }
             Self::Tuple(fst, snd) => {
                 out.push('(');
                 fst.write_to(out);
@@ -89,6 +118,131 @@ impl RustType {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustStructField {
+    pub name: String,
+    pub ty: RustType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustEnumVariant {
+    pub name: String,
+    pub fields: Vec<RustType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustDataKind {
+    Enum(Vec<RustEnumVariant>),
+    Struct(Vec<RustStructField>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustDataDef {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub kind: RustDataKind,
+}
+
+impl RustDataDef {
+    pub fn write_to(&self, out: &mut String) {
+        out.push_str("#[derive(Clone)]\npub ");
+        match &self.kind {
+            RustDataKind::Enum(_) => out.push_str("enum "),
+            RustDataKind::Struct(_) => out.push_str("struct "),
+        }
+        out.push_str(&self.name);
+        if !self.type_params.is_empty() {
+            out.push('<');
+            for (idx, tp) in self.type_params.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(tp);
+            }
+            out.push('>');
+        }
+        out.push_str(" {\n");
+        match &self.kind {
+            RustDataKind::Enum(variants) => {
+                for variant in variants {
+                    out.push_str("    ");
+                    out.push_str(&variant.name);
+                    if !variant.fields.is_empty() {
+                        out.push('(');
+                        for (idx, fty) in variant.fields.iter().enumerate() {
+                            if idx > 0 {
+                                out.push_str(", ");
+                            }
+                            fty.write_to(out);
+                        }
+                        out.push(')');
+                    }
+                    out.push_str(",\n");
+                }
+            }
+            RustDataKind::Struct(fields) => {
+                for field in fields {
+                    out.push_str("    pub ");
+                    out.push_str(&field.name);
+                    out.push_str(": ");
+                    field.ty.write_to(out);
+                    out.push_str(",\n");
+                }
+            }
+        }
+        out.push_str("}\n");
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustPatBinder {
+    pub id: usize,
+    pub name: String,
+    pub ty: RustType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustMatchPat {
+    Enum {
+        enum_name: String,
+        variant_name: String,
+        binders: Vec<RustPatBinder>,
+    },
+    Struct {
+        struct_name: String,
+        fields: Vec<(String, RustPatBinder)>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustMatchArm {
+    pub pat: RustMatchPat,
+    pub body: RustExpr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureMode {
+    ByValue,
+    ByRefCallable,
+    ByRefClone,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecCapture {
+    pub id: usize,
+    pub name: String,
+    pub ty: RustType,
+    pub mode: CaptureMode,
+    pub arg_expr: RustExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustRecArm {
+    pub pat: RustMatchPat,
+    pub rec_bindings: Vec<(usize, String, usize, String)>, // (ih_id, ih_name, field_id, field_name)
+    pub body: RustExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +302,31 @@ pub enum RustExpr {
         base: Box<Self>,
         step: Box<Self>,
     },
+    BoxNew(Box<Self>),
+    Deref(Box<Self>),
+    EnumCtor {
+        enum_name: String,
+        variant_name: String,
+        args: Vec<Self>,
+    },
+    StructInit {
+        struct_name: String,
+        fields: Vec<(String, Self)>,
+    },
+    DataMatch {
+        scrut: Box<Self>,
+        arms: Vec<RustMatchArm>,
+    },
+    RecDataMatch {
+        helper_name: String,
+        type_params: Vec<String>,
+        clone_bounds: BTreeSet<String>,
+        scrut_ty: RustType,
+        ret_ty: RustType,
+        captures: Vec<RecCapture>,
+        scrut: Box<Self>,
+        arms: Vec<RustRecArm>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +341,8 @@ pub struct RustFn {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustModule {
+    pub uses_alloc: bool,
+    pub data_defs: Vec<RustDataDef>,
     pub functions: Vec<RustFn>,
 }
 
@@ -244,6 +425,13 @@ impl RustModule {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = String::from("#![no_std]\n#![forbid(unsafe_code)]\n");
+        if self.uses_alloc {
+            out.push_str("\nextern crate alloc;\nuse alloc::boxed::Box;\n");
+        }
+        for data_def in &self.data_defs {
+            out.push('\n');
+            data_def.write_to(&mut out);
+        }
         for func in &self.functions {
             out.push('\n');
             func.write_to(&mut out);
@@ -277,6 +465,8 @@ fn count_uses(expr: &RustExpr, loop_captured: &mut BTreeSet<usize>) -> HashMap<u
         | RustExpr::Field0(inner)
         | RustExpr::Field1(inner)
         | RustExpr::VoidMatch(inner)
+        | RustExpr::BoxNew(inner)
+        | RustExpr::Deref(inner)
         | RustExpr::Closure { body: inner, .. } => {
             return count_uses(inner, loop_captured);
         }
@@ -285,6 +475,32 @@ fn count_uses(expr: &RustExpr, loop_captured: &mut BTreeSet<usize>) -> HashMap<u
             for arg in args {
                 add_counts(&mut counts, &count_uses(arg, loop_captured));
             }
+        }
+        RustExpr::EnumCtor { args, .. } => {
+            for arg in args {
+                add_counts(&mut counts, &count_uses(arg, loop_captured));
+            }
+        }
+        RustExpr::StructInit { fields, .. } => {
+            for (_, val) in fields {
+                add_counts(&mut counts, &count_uses(val, loop_captured));
+            }
+        }
+        RustExpr::DataMatch { scrut, arms } => {
+            add_counts(&mut counts, &count_uses(scrut, loop_captured));
+            let mut branch_counts = HashMap::new();
+            for arm in arms {
+                max_counts(&mut branch_counts, &count_uses(&arm.body, loop_captured));
+            }
+            add_counts(&mut counts, &branch_counts);
+        }
+        RustExpr::RecDataMatch {
+            scrut,
+            captures,
+            arms,
+            ..
+        } => {
+            count_rec_data_uses(scrut, captures, arms, loop_captured, &mut counts);
         }
         RustExpr::Tuple(fst, snd)
         | RustExpr::UnitMatch {
@@ -348,8 +564,16 @@ fn collect_inner_ownership(
         | RustExpr::Clone(inner)
         | RustExpr::Field0(inner)
         | RustExpr::Field1(inner)
-        | RustExpr::VoidMatch(inner) => {
+        | RustExpr::VoidMatch(inner)
+        | RustExpr::BoxNew(inner)
+        | RustExpr::Deref(inner) => {
             collect_inner_ownership(inner, counts, loop_captured, clone_bounds, clone_ids);
+        }
+        RustExpr::EnumCtor { .. }
+        | RustExpr::StructInit { .. }
+        | RustExpr::DataMatch { .. }
+        | RustExpr::RecDataMatch { .. } => {
+            collect_data_ownership(expr, counts, loop_captured, clone_bounds, clone_ids);
         }
         RustExpr::Call { callee, args } => {
             collect_inner_ownership(callee, counts, loop_captured, clone_bounds, clone_ids);
@@ -457,8 +681,16 @@ fn insert_clones(
         | RustExpr::Field0(inner)
         | RustExpr::Field1(inner)
         | RustExpr::VoidMatch(inner)
+        | RustExpr::BoxNew(inner)
+        | RustExpr::Deref(inner)
         | RustExpr::Closure { body: inner, .. } => {
             insert_clones(inner, counts, clone_ids, loop_captured, seen);
+        }
+        RustExpr::EnumCtor { .. }
+        | RustExpr::StructInit { .. }
+        | RustExpr::DataMatch { .. }
+        | RustExpr::RecDataMatch { .. } => {
+            insert_data_clones(expr, counts, clone_ids, loop_captured, seen);
         }
         RustExpr::Call { callee, args } => {
             insert_clones(callee, counts, clone_ids, loop_captured, seen);
@@ -500,6 +732,241 @@ fn insert_clones(
             insert_clones(step, counts, clone_ids, loop_captured, seen);
         }
     }
+}
+
+fn count_rec_data_uses(
+    scrut: &RustExpr,
+    captures: &[RecCapture],
+    arms: &[RustRecArm],
+    loop_captured: &mut BTreeSet<usize>,
+    counts: &mut HashMap<usize, usize>,
+) {
+    add_counts(counts, &count_uses(scrut, loop_captured));
+    for cap in captures {
+        *counts.entry(cap.id).or_insert(0) += 1;
+    }
+    let mut branch_counts = HashMap::new();
+    for arm in arms {
+        let mut arm_counts = count_uses(&arm.body, loop_captured);
+        for (_, _, field_id, _) in &arm.rec_bindings {
+            *arm_counts.entry(*field_id).or_insert(0) += 1;
+        }
+        max_counts(&mut branch_counts, &arm_counts);
+    }
+    for (id, cnt) in branch_counts {
+        if !captures.iter().any(|c| c.id == id) {
+            *counts.entry(id).or_insert(0) += cnt;
+        }
+    }
+}
+
+fn collect_data_ownership(
+    expr: &mut RustExpr,
+    counts: &HashMap<usize, usize>,
+    loop_captured: &BTreeSet<usize>,
+    clone_bounds: &mut BTreeSet<String>,
+    clone_ids: &mut BTreeSet<usize>,
+) {
+    match expr {
+        RustExpr::EnumCtor { args, .. } => {
+            for arg in args {
+                collect_inner_ownership(arg, counts, loop_captured, clone_bounds, clone_ids);
+            }
+        }
+        RustExpr::StructInit { fields, .. } => {
+            for (_, val) in fields {
+                collect_inner_ownership(val, counts, loop_captured, clone_bounds, clone_ids);
+            }
+        }
+        RustExpr::DataMatch { scrut, arms } => {
+            collect_inner_ownership(scrut, counts, loop_captured, clone_bounds, clone_ids);
+            for arm in arms {
+                collect_pat_ownership(&mut arm.pat, counts, loop_captured, clone_bounds, clone_ids);
+                collect_inner_ownership(
+                    &mut arm.body,
+                    counts,
+                    loop_captured,
+                    clone_bounds,
+                    clone_ids,
+                );
+            }
+        }
+        RustExpr::RecDataMatch { .. } => {
+            collect_rec_data_ownership(expr, counts, loop_captured, clone_bounds, clone_ids);
+        }
+        _ => {}
+    }
+}
+
+fn insert_data_clones(
+    expr: &mut RustExpr,
+    counts: &HashMap<usize, usize>,
+    clone_ids: &BTreeSet<usize>,
+    loop_captured: &BTreeSet<usize>,
+    seen: &mut HashMap<usize, usize>,
+) {
+    match expr {
+        RustExpr::EnumCtor { args, .. } => {
+            for arg in args {
+                insert_clones(arg, counts, clone_ids, loop_captured, seen);
+            }
+        }
+        RustExpr::StructInit { fields, .. } => {
+            for (_, val) in fields {
+                insert_clones(val, counts, clone_ids, loop_captured, seen);
+            }
+        }
+        RustExpr::DataMatch { scrut, arms } => {
+            insert_clones(scrut, counts, clone_ids, loop_captured, seen);
+            let base_seen = seen.clone();
+            for arm in arms {
+                let mut seen_arm = base_seen.clone();
+                insert_clones(
+                    &mut arm.body,
+                    counts,
+                    clone_ids,
+                    loop_captured,
+                    &mut seen_arm,
+                );
+                max_counts(seen, &seen_arm);
+            }
+        }
+        RustExpr::RecDataMatch {
+            scrut,
+            captures,
+            arms,
+            ..
+        } => {
+            insert_rec_data_clones(
+                scrut,
+                captures,
+                arms,
+                counts,
+                clone_ids,
+                loop_captured,
+                seen,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn collect_rec_data_ownership(
+    expr: &mut RustExpr,
+    counts: &HashMap<usize, usize>,
+    loop_captured: &BTreeSet<usize>,
+    clone_bounds: &mut BTreeSet<String>,
+    clone_ids: &mut BTreeSet<usize>,
+) {
+    let RustExpr::RecDataMatch {
+        scrut,
+        captures,
+        clone_bounds: rec_bounds,
+        ret_ty,
+        arms,
+        ..
+    } = expr
+    else {
+        return;
+    };
+    collect_inner_ownership(scrut, counts, loop_captured, clone_bounds, clone_ids);
+    for cap in captures {
+        if cap.mode == CaptureMode::ByRefClone {
+            cap.ty.collect_type_params(clone_bounds);
+            cap.ty.collect_type_params(rec_bounds);
+        }
+    }
+    for arm in arms {
+        collect_pat_ownership(&mut arm.pat, counts, loop_captured, rec_bounds, clone_ids);
+        for (ih_id, ih_name, _, _) in &mut arm.rec_bindings {
+            let uses = counts.get(ih_id).copied().unwrap_or(0);
+            if uses == 0 {
+                *ih_name = mark_unused(ih_name);
+            } else if uses > 1 && !ret_ty.is_callable() && !ret_ty.is_copy() {
+                ret_ty.collect_type_params(rec_bounds);
+                let _ = clone_ids.insert(*ih_id);
+            }
+        }
+        collect_inner_ownership(&mut arm.body, counts, loop_captured, rec_bounds, clone_ids);
+    }
+    for tp in rec_bounds.iter() {
+        let _ = clone_bounds.insert(tp.clone());
+    }
+}
+
+fn insert_rec_data_clones(
+    scrut: &mut RustExpr,
+    captures: &mut [RecCapture],
+    arms: &mut [RustRecArm],
+    counts: &HashMap<usize, usize>,
+    clone_ids: &BTreeSet<usize>,
+    loop_captured: &BTreeSet<usize>,
+    seen: &mut HashMap<usize, usize>,
+) {
+    insert_clones(scrut, counts, clone_ids, loop_captured, seen);
+    for cap in captures.iter_mut() {
+        if cap.mode == CaptureMode::ByValue {
+            insert_clones(&mut cap.arg_expr, counts, clone_ids, loop_captured, seen);
+        }
+    }
+    let mut inner_clone_ids = clone_ids.clone();
+    let mut inner_loop = loop_captured.clone();
+    for cap in captures.iter() {
+        if cap.mode == CaptureMode::ByRefClone {
+            let _ = inner_clone_ids.insert(cap.id);
+            let _ = inner_loop.insert(cap.id);
+        }
+    }
+    for arm in arms {
+        let mut seen_arm = HashMap::new();
+        insert_clones(
+            &mut arm.body,
+            counts,
+            &inner_clone_ids,
+            &inner_loop,
+            &mut seen_arm,
+        );
+    }
+}
+
+fn collect_pat_ownership(
+    pat: &mut RustMatchPat,
+    counts: &HashMap<usize, usize>,
+    loop_captured: &BTreeSet<usize>,
+    clone_bounds: &mut BTreeSet<String>,
+    clone_ids: &mut BTreeSet<usize>,
+) {
+    let apply_binder =
+        |b: &mut RustPatBinder, bounds: &mut BTreeSet<String>, cids: &mut BTreeSet<usize>| {
+            let uses = counts.get(&b.id).copied().unwrap_or(0);
+            if uses == 0 {
+                b.name = mark_unused(&b.name);
+            } else if (uses > 1 || loop_captured.contains(&b.id))
+                && !b.ty.is_callable()
+                && !b.ty.is_copy()
+            {
+                b.ty.collect_type_params(bounds);
+                let _ = cids.insert(b.id);
+            }
+        };
+    match pat {
+        RustMatchPat::Enum { binders, .. } => {
+            for b in binders {
+                apply_binder(b, clone_bounds, clone_ids);
+            }
+        }
+        RustMatchPat::Struct { fields, .. } => {
+            for (_, b) in fields {
+                apply_binder(b, clone_bounds, clone_ids);
+            }
+        }
+    }
+}
+
+pub fn collect_local_ids(expr: &RustExpr, out: &mut BTreeSet<usize>) {
+    let mut dummy = BTreeSet::new();
+    let counts = count_uses(expr, &mut dummy);
+    out.extend(counts.keys().copied());
 }
 
 fn write_indent(depth: usize, out: &mut String) {
@@ -564,11 +1031,151 @@ fn write_block_expr(expr: &RustExpr, depth: usize, out: &mut String) {
             out.push_str(acc_name);
             out.push('\n');
         }
+        RustExpr::RecDataMatch { .. } => {
+            write_rec_data_match(expr, depth, out);
+        }
         other => {
             write_inline_expr(other, depth, out);
             out.push('\n');
         }
     }
+}
+
+fn write_match_pat(pat: &RustMatchPat, out: &mut String) {
+    match pat {
+        RustMatchPat::Enum {
+            enum_name,
+            variant_name,
+            binders,
+        } => {
+            out.push_str(enum_name);
+            out.push_str("::");
+            out.push_str(variant_name);
+            if !binders.is_empty() {
+                out.push('(');
+                for (idx, b) in binders.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&b.name);
+                }
+                out.push(')');
+            }
+        }
+        RustMatchPat::Struct {
+            struct_name,
+            fields,
+        } => {
+            out.push_str(struct_name);
+            out.push_str(" { ");
+            for (idx, (fname, b)) in fields.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(fname);
+                out.push_str(": ");
+                out.push_str(&b.name);
+            }
+            out.push_str(" }");
+        }
+    }
+}
+
+fn write_rec_data_match(expr: &RustExpr, depth: usize, out: &mut String) {
+    let RustExpr::RecDataMatch {
+        helper_name,
+        type_params,
+        clone_bounds,
+        scrut_ty,
+        ret_ty,
+        captures,
+        scrut,
+        arms,
+    } = expr
+    else {
+        return;
+    };
+    out.push_str("fn ");
+    out.push_str(helper_name);
+    if !type_params.is_empty() {
+        out.push('<');
+        for (idx, tp) in type_params.iter().enumerate() {
+            if idx > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(tp);
+            if clone_bounds.contains(tp) {
+                out.push_str(": Clone");
+            }
+        }
+        out.push('>');
+    }
+    out.push_str("(scrut: ");
+    scrut_ty.write_to(out);
+    for cap in captures {
+        out.push_str(", ");
+        out.push_str(&cap.name);
+        out.push_str(": ");
+        if cap.mode != CaptureMode::ByValue {
+            out.push('&');
+        }
+        cap.ty.write_to(out);
+    }
+    out.push_str(") -> ");
+    ret_ty.write_to(out);
+    out.push_str(" {\n");
+    write_indent(depth + 1, out);
+    out.push_str("match scrut {\n");
+    for arm in arms {
+        write_indent(depth + 2, out);
+        write_match_pat(&arm.pat, out);
+        out.push_str(" => ");
+        if arm.rec_bindings.is_empty() {
+            write_inline_expr(&arm.body, depth + 2, out);
+            out.push_str(",\n");
+        } else {
+            out.push_str("{\n");
+            for (_, ih_name, _, field_name) in &arm.rec_bindings {
+                write_indent(depth + 3, out);
+                out.push_str("let ");
+                out.push_str(ih_name);
+                if !ret_ty.is_callable() {
+                    out.push_str(": ");
+                    ret_ty.write_to(out);
+                }
+                out.push_str(" = ");
+                out.push_str(helper_name);
+                out.push_str("(*");
+                out.push_str(field_name);
+                for cap in captures {
+                    out.push_str(", ");
+                    out.push_str(&cap.name);
+                }
+                out.push_str(");\n");
+            }
+            write_block_expr(&arm.body, depth + 3, out);
+            write_indent(depth + 2, out);
+            out.push_str("},\n");
+        }
+    }
+    write_indent(depth + 1, out);
+    out.push_str("}\n");
+    write_indent(depth, out);
+    out.push_str("}\n");
+    write_indent(depth, out);
+    out.push_str(helper_name);
+    out.push('(');
+    write_inline_expr(scrut, depth, out);
+    for cap in captures {
+        out.push_str(", ");
+        if cap.mode == CaptureMode::ByValue {
+            write_inline_expr(&cap.arg_expr, depth, out);
+        } else {
+            out.push('&');
+            out.push_str(&cap.name);
+        }
+    }
+    out.push_str(")\n");
 }
 
 fn write_inline_expr(expr: &RustExpr, depth: usize, out: &mut String) {
@@ -649,12 +1256,86 @@ fn write_inline_expr(expr: &RustExpr, depth: usize, out: &mut String) {
             write_inline_expr(on_false, depth, out);
             out.push_str(" }");
         }
-        RustExpr::Let { .. } | RustExpr::NatLoop { .. } => {
+        RustExpr::Let { .. } | RustExpr::NatLoop { .. } | RustExpr::RecDataMatch { .. } => {
             out.push_str("{\n");
             write_block_expr(expr, depth + 1, out);
             write_indent(depth, out);
             out.push('}');
         }
+        RustExpr::BoxNew(_)
+        | RustExpr::Deref(_)
+        | RustExpr::EnumCtor { .. }
+        | RustExpr::StructInit { .. }
+        | RustExpr::DataMatch { .. } => write_data_inline_expr(expr, depth, out),
+    }
+}
+
+fn write_data_inline_expr(expr: &RustExpr, depth: usize, out: &mut String) {
+    match expr {
+        RustExpr::BoxNew(inner) => {
+            out.push_str("Box::new(");
+            write_inline_expr(inner, depth, out);
+            out.push(')');
+        }
+        RustExpr::Deref(inner) => {
+            out.push_str("(*");
+            write_atom_expr(inner, depth, out);
+            out.push(')');
+        }
+        RustExpr::EnumCtor {
+            enum_name,
+            variant_name,
+            args,
+        } => {
+            out.push_str(enum_name);
+            out.push_str("::");
+            out.push_str(variant_name);
+            if !args.is_empty() {
+                out.push('(');
+                for (idx, arg) in args.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(", ");
+                    }
+                    write_inline_expr(arg, depth, out);
+                }
+                out.push(')');
+            }
+        }
+        RustExpr::StructInit {
+            struct_name,
+            fields,
+        } => {
+            out.push_str(struct_name);
+            out.push_str(" { ");
+            for (idx, (fname, val)) in fields.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(fname);
+                out.push_str(": ");
+                write_inline_expr(val, depth, out);
+            }
+            out.push_str(" }");
+        }
+        RustExpr::DataMatch { scrut, arms } => {
+            out.push_str("match ");
+            write_inline_expr(scrut, depth, out);
+            if arms.is_empty() {
+                out.push_str(" {}");
+            } else {
+                out.push_str(" {\n");
+                for arm in arms {
+                    write_indent(depth + 1, out);
+                    write_match_pat(&arm.pat, out);
+                    out.push_str(" => ");
+                    write_inline_expr(&arm.body, depth + 1, out);
+                    out.push_str(",\n");
+                }
+                write_indent(depth, out);
+                out.push('}');
+            }
+        }
+        _ => {}
     }
 }
 
@@ -664,7 +1345,8 @@ fn write_atom_expr(expr: &RustExpr, depth: usize, out: &mut String) {
         | RustExpr::Succ(_)
         | RustExpr::VoidMatch(_)
         | RustExpr::UnitMatch { .. }
-        | RustExpr::BoolMatch { .. } => {
+        | RustExpr::BoolMatch { .. }
+        | RustExpr::DataMatch { .. } => {
             out.push('(');
             write_inline_expr(expr, depth, out);
             out.push(')');

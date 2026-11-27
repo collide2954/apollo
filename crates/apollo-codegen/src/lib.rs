@@ -1,3 +1,4 @@
+mod data;
 pub mod escape;
 pub mod ir;
 
@@ -12,6 +13,7 @@ use apollo_syntax::DeclKind;
 
 use crate::escape::escape_ident;
 use crate::ir::{FnKind, RustExpr, RustFn, RustModule, RustParam, RustType};
+use apollo_syntax::DataKind;
 
 #[must_use]
 pub const fn version() -> &'static str {
@@ -83,6 +85,8 @@ impl std::error::Error for CompileError {}
 
 pub fn emit_module(module: &CheckedModule) -> Result<String, CodegenError> {
     let mut arena = module.arena.clone();
+    let (data_defs, data_metas, uses_alloc) =
+        DeclLowerer::lower_data_defs(&mut arena, &module.data_decls)?;
     let mut globals = HashMap::new();
     let mut functions = Vec::new();
 
@@ -90,13 +94,18 @@ pub fn emit_module(module: &CheckedModule) -> Result<String, CodegenError> {
         if decl.kind == DeclKind::Theorem {
             continue;
         }
-        if let Some((rust_fn, sig)) = lower_decl(&mut arena, &globals, decl)? {
+        if let Some((rust_fn, sig)) = lower_decl(&mut arena, &globals, &data_metas, decl)? {
             let _ = globals.insert((decl.ty, decl.body), sig);
             functions.push(rust_fn);
         }
     }
 
-    Ok(RustModule { functions }.render())
+    Ok(RustModule {
+        uses_alloc,
+        data_defs,
+        functions,
+    }
+    .render())
 }
 
 pub fn compile_source(source: &str) -> Result<String, CompileError> {
@@ -106,16 +115,37 @@ pub fn compile_source(source: &str) -> Result<String, CompileError> {
 }
 
 #[derive(Debug, Clone)]
-struct GlobalSig {
+pub(crate) struct LoweredCtorMeta {
+    pub(crate) rust_name: String,
+    pub(crate) field_keep: Vec<bool>,
+    pub(crate) field_names: Vec<String>,
+    pub(crate) field_rec: Vec<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoweredDataMeta {
+    pub(crate) rust_name: String,
+    pub(crate) kind: DataKind,
+    pub(crate) param_keep: Vec<bool>,
+    pub(crate) ctors: Vec<LoweredCtorMeta>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GlobalSig {
     rust_name: String,
     param_keep: Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
-enum Binding {
+pub(crate) enum Binding {
     TypeParam(String),
     Erased,
-    Runtime { id: usize, name: String },
+    Runtime {
+        id: usize,
+        name: String,
+        ty: RustType,
+        is_boxed: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,60 +155,71 @@ enum SigmaShape {
     Both,
 }
 
-const fn is_erased_value_type(val: &Value) -> bool {
+pub(crate) const fn is_erased_value_type(val: &Value) -> bool {
     matches!(
         val,
         Value::Path { .. } | Value::Universe(_) | Value::Interval
     )
 }
 
-struct DeclLowerer<'a> {
-    arena: &'a mut TermArena,
+pub(crate) struct DeclLowerer<'a> {
+    pub(crate) arena: &'a mut TermArena,
     globals: &'a HashMap<(TermId, TermId), GlobalSig>,
-    decl_name: String,
+    pub(crate) data_metas: &'a [LoweredDataMeta],
+    pub(crate) decl_name: String,
     ctx: Ctx,
-    env: Vec<Value>,
-    bindings: Vec<Binding>,
+    pub(crate) env: Vec<Value>,
+    pub(crate) bindings: Vec<Binding>,
     next_local_id: usize,
+    next_rec_id: usize,
 }
 
 impl<'a> DeclLowerer<'a> {
-    fn new(
+    pub(crate) fn new(
         arena: &'a mut TermArena,
         globals: &'a HashMap<(TermId, TermId), GlobalSig>,
+        data_metas: &'a [LoweredDataMeta],
         decl_name: String,
     ) -> Self {
         Self {
             arena,
             globals,
+            data_metas,
             decl_name,
             ctx: Ctx::new(),
             env: Vec::new(),
             bindings: Vec::new(),
             next_local_id: 0,
+            next_rec_id: 0,
         }
     }
 
-    const fn alloc_id(&mut self) -> usize {
+    pub(crate) const fn alloc_id(&mut self) -> usize {
         let id = self.next_local_id;
         self.next_local_id += 1;
         id
     }
 
-    fn push_binding(&mut self, ty_val: Value, binding: Binding) -> Value {
+    pub(crate) const fn alloc_rec_id(&mut self) -> usize {
+        let id = self.next_rec_id;
+        self.next_rec_id += 1;
+        id
+    }
+
+    pub(crate) fn push_binding(&mut self, ty_val: Value, binding: Binding) -> Value {
         let var = self.ctx.push(ty_val);
         self.env.push(var.clone());
         self.bindings.push(binding);
         var
     }
 
-    fn pop_binding(&mut self) {
+    pub(crate) fn pop_binding(&mut self) {
         self.ctx.pop();
         let _ = self.env.pop();
         let _ = self.bindings.pop();
     }
 
-    fn eval_term(&self, id: TermId) -> Result<Value, CodegenError> {
+    pub(crate) fn eval_term(&self, id: TermId) -> Result<Value, CodegenError> {
         eval(self.arena, &self.env, id).map_err(|err| CodegenError::Eval {
             decl: self.decl_name.clone(),
             err,
@@ -216,7 +257,7 @@ impl<'a> DeclLowerer<'a> {
         }
     }
 
-    fn lower_val_ty(
+    pub(crate) fn lower_val_ty(
         &mut self,
         val: &Value,
         fn_mult: Multiplicity,
@@ -226,6 +267,7 @@ impl<'a> DeclLowerer<'a> {
             Value::Void => Ok(RustType::Void),
             Value::Bool => Ok(RustType::Bool),
             Value::Nat => Ok(RustType::Nat),
+            Value::Data { id, params } => self.lower_data_type(*id, params),
             Value::Neutral(neutral) => match neutral.as_ref() {
                 Neutral::Var(level) => match self.bindings.get(level.0 as usize) {
                     Some(Binding::TypeParam(name)) => Ok(RustType::Named(name.clone())),
@@ -321,7 +363,7 @@ impl<'a> DeclLowerer<'a> {
         })
     }
 
-    fn lower_expr(
+    pub(crate) fn lower_expr(
         &mut self,
         id: TermId,
         expected: Option<&Value>,
@@ -344,10 +386,19 @@ impl<'a> DeclLowerer<'a> {
                         decl: self.decl_name.clone(),
                     })?;
                 match self.bindings.get(pos) {
-                    Some(Binding::Runtime { id, name }) => Ok(RustExpr::Local {
-                        id: *id,
-                        name: name.clone(),
-                    }),
+                    Some(Binding::Runtime {
+                        id, name, is_boxed, ..
+                    }) => {
+                        let local = RustExpr::Local {
+                            id: *id,
+                            name: name.clone(),
+                        };
+                        if *is_boxed {
+                            Ok(RustExpr::Deref(Box::new(local)))
+                        } else {
+                            Ok(local)
+                        }
+                    }
                     _ => Err(CodegenError::UnsupportedExpr {
                         decl: self.decl_name.clone(),
                     }),
@@ -390,6 +441,19 @@ impl<'a> DeclLowerer<'a> {
             | Term::Zero
             | Term::Succ(_)
             | Term::NatElim { .. } => self.lower_inductive(&term),
+            Term::Ctor {
+                id,
+                ctor,
+                params,
+                args,
+            } => self.lower_ctor(id, ctor, &params, &args),
+            Term::DataElim {
+                id,
+                params,
+                motive,
+                branches,
+                scrut,
+            } => self.lower_data_elim(id, &params, motive, &branches, scrut, expected),
             Term::Universe(_)
             | Term::Pi { .. }
             | Term::Sigma { .. }
@@ -397,9 +461,7 @@ impl<'a> DeclLowerer<'a> {
             | Term::Void
             | Term::Bool
             | Term::Nat
-            | Term::Data { .. }
-            | Term::Ctor { .. }
-            | Term::DataElim { .. } => Err(CodegenError::UnsupportedExpr {
+            | Term::Data { .. } => Err(CodegenError::UnsupportedExpr {
                 decl: self.decl_name.clone(),
             }),
         }
@@ -508,6 +570,8 @@ impl<'a> DeclLowerer<'a> {
             Binding::Runtime {
                 id: pred_id,
                 name: pred_name.clone(),
+                ty: RustType::Nat,
+                is_boxed: false,
             },
         );
         let ih_ty =
@@ -542,6 +606,8 @@ impl<'a> DeclLowerer<'a> {
             Binding::Runtime {
                 id: acc_id,
                 name: acc_name.clone(),
+                ty: acc_ty.clone(),
+                is_boxed: false,
             },
         );
         let step_res = self.lower_expr(step, Some(&succ_ty));
@@ -683,10 +749,16 @@ impl<'a> DeclLowerer<'a> {
             let binding = if mult.is_erased() {
                 Binding::Erased
             } else {
+                let dom_rty = self.lower_val_ty(&domain, mult)?;
                 let local_id = self.alloc_id();
                 let name = format!("v{local_id}");
                 params.push((local_id, name.clone()));
-                Binding::Runtime { id: local_id, name }
+                Binding::Runtime {
+                    id: local_id,
+                    name,
+                    ty: dom_rty,
+                    is_boxed: false,
+                }
             };
             let var = self.push_binding((*domain).clone(), binding);
             pushed += 1;
@@ -821,6 +893,8 @@ impl<'a> DeclLowerer<'a> {
             Binding::Runtime {
                 id: local_id,
                 name: name.clone(),
+                ty: rust_ty.clone(),
+                is_boxed: false,
             },
         );
         let body_res = self.lower_expr(body, expected);
@@ -878,9 +952,10 @@ impl<'a> DeclLowerer<'a> {
 fn lower_decl(
     arena: &mut TermArena,
     globals: &HashMap<(TermId, TermId), GlobalSig>,
+    data_metas: &[LoweredDataMeta],
     decl: &CheckedDecl,
 ) -> Result<Option<(RustFn, GlobalSig)>, CodegenError> {
-    let mut lowerer = DeclLowerer::new(arena, globals, decl.name.clone());
+    let mut lowerer = DeclLowerer::new(arena, globals, data_metas, decl.name.clone());
     let mut cur_ty = decl.ty;
     let mut cur_body = decl.body;
     let mut type_params = Vec::new();
@@ -921,13 +996,15 @@ fn lower_decl(
             params.push(RustParam {
                 id,
                 name: rust_name.clone(),
-                ty: rust_ty,
+                ty: rust_ty.clone(),
             });
             let _ = lowerer.push_binding(
                 dom_val,
                 Binding::Runtime {
                     id,
                     name: rust_name,
+                    ty: rust_ty,
+                    is_boxed: false,
                 },
             );
         }
@@ -1437,6 +1514,118 @@ pub fn r#impl<A>(r#type: A) -> A {
             assert!(code.contains("pub fn iter_n<A>(n: u128, x: A, f: impl Fn(A) -> A) -> A {\n    let mut v4: A = x;\n    for _v3 in 0..n {\n        v4 = f(v4);\n    }\n    v4\n}"));
             assert!(code.contains("pub fn double_n(n: u128, m: u128) -> u128 {\n    let mut v3: u128 = m;\n    for _v2 in 0..n {\n        v3 = add(v3, v3);\n    }\n    v3\n}"));
             assert!(code.contains("pub fn step_let(n: u128, m: u128) -> u128 {\n    let mut v3: u128 = m;\n    for _v2 in 0..n {\n        v3 = {\n            let v4: u128 = v3 + 1;\n            v4\n        };\n    }\n    v3\n}"));
+        }
+    }
+
+    #[test]
+    fn extracts_non_recursive_adts_without_alloc_and_erases_proof_fields() {
+        let src = r"
+            enum Empty {}
+            enum Option(0 A: Type 0) {
+                None,
+                Some(1 val: A),
+            }
+            struct Point(0 A: Type 0) {
+                1 x: A,
+                1 y: A,
+            }
+            struct VerifiedNat {
+                1 val: Nat,
+                0 ok: Path(_ => Nat, val, val),
+            }
+
+            fn absurd_e(0 A: Type 0, 1 e: Empty) -> A {
+                match e {}
+            }
+
+            fn unwrap_or(0 A: Type 0, 1 o: Option(A), ω d: A) -> A {
+                match o {
+                    Option::None => d,
+                    Option::Some(v) => v,
+                }
+            }
+
+            fn swap_pt(0 A: Type 0, 1 p: Point(A)) -> Point(A) {
+                match p {
+                    Point { x, y } => Point { x: y, y: x },
+                }
+            }
+
+            fn mk_verified(1 n: Nat) -> VerifiedNat {
+                VerifiedNat { val: n, ok: <i> n }
+            }
+        ";
+        let emitted = compile_source(src);
+        assert!(emitted.is_ok(), "unexpected error: {:?}", emitted.err());
+        if let Ok(code) = emitted {
+            assert!(!code.contains("extern crate alloc"));
+            assert!(code.contains("pub enum Empty {\n}"));
+            assert!(code.contains("pub enum Option<A> {\n    None,\n    Some(A),\n}"));
+            assert!(code.contains("pub struct Point<A> {\n    pub x: A,\n    pub y: A,\n}"));
+            assert!(code.contains("pub struct VerifiedNat {\n    pub val: u128,\n}"));
+            assert!(!code.contains("ok:"));
+            assert!(code.contains("VerifiedNat { val: n }"));
+        }
+    }
+
+    #[test]
+    fn extracts_recursive_list_and_tree_with_alloc_box_and_helpers() {
+        let src = r"
+            fn add(1 n: Nat, 1 m: Nat) -> Nat {
+                match n { zero => m, succ(_, acc) => succ(acc) }
+            }
+            enum List(0 A: Type 0) {
+                Nil,
+                Cons(ω head: A, 1 tail: List(A)),
+            }
+            enum Tree(0 A: Type 0) {
+                Leaf,
+                Node(1 left: Tree(A), 1 val: A, 1 right: Tree(A)),
+            }
+            fn tail_or_nil(0 A: Type 0, 1 xs: List(A)) -> List(A) {
+                match xs {
+                    List::Nil => List::Nil,
+                    List::Cons(_, t) => t,
+                }
+            }
+            fn append(0 A: Type 0, 1 xs: List(A), ω ys: List(A)) -> List(A) {
+                match xs {
+                    List::Nil => ys,
+                    List::Cons(h, _, ih) => List::Cons(h, ih),
+                }
+            }
+            fn list_map(0 A: Type 0, 0 B: Type 0, 1 xs: List(A), ω f: (1 _: A) -> B) -> List(B) {
+                match xs {
+                    List::Nil => List::Nil,
+                    List::Cons(h, _, ih) => List::Cons(f(h), ih),
+                }
+            }
+            fn list_fill(0 A: Type 0, 1 xs: List(A), ω v: A) -> List(A) {
+                match xs {
+                    List::Nil => List::Nil,
+                    List::Cons(_, _, ih) => List::Cons(v, ih),
+                }
+            }
+            fn tree_sum(1 t: Tree(Nat)) -> Nat {
+                match t {
+                    Tree::Leaf => zero,
+                    Tree::Node(_, v, _, ihl, ihr) => add(v, add(ihl, ihr)),
+                }
+            }
+        ";
+        let emitted = compile_source(src);
+        assert!(emitted.is_ok(), "unexpected error: {:?}", emitted.err());
+        if let Ok(code) = emitted {
+            assert!(code.contains("extern crate alloc;\nuse alloc::boxed::Box;"));
+            assert!(code.contains("Cons(A, Box<List<A>>)"));
+            assert!(code.contains("Node(Box<Tree<A>>, A, Box<Tree<A>>)"));
+            assert!(
+                code.contains("pub fn tail_or_nil<A>(xs: List<A>) -> List<A> {\n    match xs {")
+            );
+            assert!(code.contains("pub fn append<A>(xs: List<A>, ys: List<A>) -> List<A>"));
+            assert!(code.contains("f: &impl Fn(A) -> B"));
+            assert!(code.contains("pub fn list_fill<A: Clone>(xs: List<A>, v: A) -> List<A>"));
+            assert!(code.contains("pub fn tree_sum(t: Tree<u128>) -> u128"));
         }
     }
 }

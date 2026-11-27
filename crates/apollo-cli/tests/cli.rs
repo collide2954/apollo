@@ -127,4 +127,29 @@ fn binary_builds_extractable_example_to_valid_rust() {
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("cannot read"));
     }
+
+    let arithmetic = examples_dir().join("arithmetic.ap");
+    let arith_check = Command::new(bin).arg("check").arg(&arithmetic).output();
+    assert!(arith_check.is_ok());
+    if let Ok(output) = arith_check {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("checked 10 declarations"));
+    }
+
+    let arith_build = Command::new(bin).arg("build").arg(&arithmetic).output();
+    assert!(arith_build.is_ok());
+    if let Ok(output) = arith_build {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let emitted = String::from_utf8_lossy(&output.stdout);
+        assert!(emitted.contains("pub fn mul(n: u128, m: u128) -> u128"));
+        assert!(!emitted.contains("add_zero_right"));
+    }
 }

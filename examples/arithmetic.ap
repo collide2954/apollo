@@ -1,0 +1,62 @@
+fn absurd(0 A: Type 0, 1 v: Void) -> A {
+    match v {}
+}
+
+fn unit_id(1 u: Unit) -> Unit {
+    match u {
+        () => (),
+    }
+}
+
+fn not(1 b: Bool) -> Bool {
+    match b {
+        true => false,
+        false => true,
+    }
+}
+
+fn and(1 a: Bool, ω b: Bool) -> Bool {
+    match a {
+        true => b,
+        false => false,
+    }
+}
+
+theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+    match b as |x| Path(_ => Bool, not(not(x)), x) {
+        true => <i> true,
+        false => <i> false,
+    }
+}
+
+fn two() -> Nat {
+    succ(succ(zero))
+}
+
+fn pred(1 n: Nat) -> Nat {
+    match n {
+        zero => zero,
+        succ(k) => k,
+    }
+}
+
+fn add(1 n: Nat, 1 m: Nat) -> Nat {
+    match n {
+        zero => m,
+        succ(_, acc) => succ(acc),
+    }
+}
+
+theorem add_zero_right(0 n: Nat) -> Path(_ => Nat, add(n, zero), n) {
+    match n as |x| Path(_ => Nat, add(x, zero), x) {
+        zero => <i> zero,
+        succ(k, ih) => <i> succ(ih @ i),
+    }
+}
+
+fn mul(1 n: Nat, ω m: Nat) -> Nat {
+    match n {
+        zero => zero,
+        succ(_, acc) => add(m, acc),
+    }
+}

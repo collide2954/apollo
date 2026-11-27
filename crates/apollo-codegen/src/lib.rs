@@ -3,9 +3,10 @@ pub mod ir;
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
+use std::sync::Arc;
 
 use apollo_elab::{CheckedDecl, CheckedModule, ElabError, check_source};
-use apollo_kernel::nbe::{EvalError, Neutral, Value, eval, quote};
+use apollo_kernel::nbe::{Closure, EvalError, Neutral, Value, eval, quote};
 use apollo_kernel::{Ctx, Multiplicity, Term, TermArena, TermId, TypeError, infer};
 use apollo_syntax::DeclKind;
 
@@ -196,7 +197,7 @@ impl<'a> DeclLowerer<'a> {
     fn sigma_shape(
         &self,
         mult: Multiplicity,
-        second: &apollo_kernel::nbe::Closure,
+        second: &Closure,
     ) -> Result<SigmaShape, CodegenError> {
         if mult.is_erased() {
             return Ok(SigmaShape::ErasedFirst);
@@ -221,6 +222,10 @@ impl<'a> DeclLowerer<'a> {
         fn_mult: Multiplicity,
     ) -> Result<RustType, CodegenError> {
         match val {
+            Value::Unit => Ok(RustType::Unit),
+            Value::Void => Ok(RustType::Void),
+            Value::Bool => Ok(RustType::Bool),
+            Value::Nat => Ok(RustType::Nat),
             Value::Neutral(neutral) => match neutral.as_ref() {
                 Neutral::Var(level) => match self.bindings.get(level.0 as usize) {
                     Some(Binding::TypeParam(name)) => Ok(RustType::Named(name.clone())),
@@ -350,7 +355,15 @@ impl<'a> DeclLowerer<'a> {
             }
             Term::Ann { term: inner, ty } => {
                 if let Some(sig) = self.globals.get(&(ty, inner)) {
-                    return Ok(RustExpr::Global(sig.rust_name.clone()));
+                    let global = RustExpr::Global(sig.rust_name.clone());
+                    return if sig.param_keep.is_empty() {
+                        Ok(RustExpr::Call {
+                            callee: Box::new(global),
+                            args: Vec::new(),
+                        })
+                    } else {
+                        Ok(global)
+                    };
                 }
                 let ty_val = self.eval_term(ty)?;
                 self.lower_expr(inner, Some(&ty_val))
@@ -368,25 +381,181 @@ impl<'a> DeclLowerer<'a> {
                     decl: self.decl_name.clone(),
                 })
             }
+            Term::Tt
+            | Term::UnitElim { .. }
+            | Term::VoidElim { .. }
+            | Term::True
+            | Term::False
+            | Term::BoolElim { .. }
+            | Term::Zero
+            | Term::Succ(_)
+            | Term::NatElim { .. } => self.lower_inductive(&term),
             Term::Universe(_)
             | Term::Pi { .. }
             | Term::Sigma { .. }
             | Term::Unit
-            | Term::Tt
-            | Term::UnitElim { .. }
             | Term::Void
-            | Term::VoidElim { .. }
             | Term::Bool
-            | Term::True
-            | Term::False
-            | Term::BoolElim { .. }
-            | Term::Nat
-            | Term::Zero
-            | Term::Succ(_)
-            | Term::NatElim { .. } => Err(CodegenError::UnsupportedExpr {
+            | Term::Nat => Err(CodegenError::UnsupportedExpr {
                 decl: self.decl_name.clone(),
             }),
         }
+    }
+
+    fn lower_inductive(&mut self, term: &Term) -> Result<RustExpr, CodegenError> {
+        match *term {
+            Term::Tt => Ok(RustExpr::Tt),
+            Term::True => Ok(RustExpr::BoolLit(true)),
+            Term::False => Ok(RustExpr::BoolLit(false)),
+            Term::Zero => Ok(RustExpr::NatLit(0)),
+            Term::Succ(pred) => match self.lower_expr(pred, Some(&Value::Nat))? {
+                RustExpr::NatLit(val) => Ok(val.checked_add(1).map_or_else(
+                    || RustExpr::Succ(Box::new(RustExpr::NatLit(val))),
+                    RustExpr::NatLit,
+                )),
+                other => Ok(RustExpr::Succ(Box::new(other))),
+            },
+            Term::VoidElim { scrut, .. } => {
+                let scrut_expr = self.lower_expr(scrut, Some(&Value::Void))?;
+                Ok(RustExpr::VoidMatch(Box::new(scrut_expr)))
+            }
+            Term::UnitElim {
+                motive,
+                on_unit,
+                scrut,
+            } => {
+                let scrut_expr = self.lower_expr(scrut, Some(&Value::Unit))?;
+                let motive_cl = Closure::new(self.env.clone(), motive);
+                let unit_ty =
+                    motive_cl
+                        .apply(self.arena, Value::Tt)
+                        .map_err(|err| CodegenError::Eval {
+                            decl: self.decl_name.clone(),
+                            err,
+                        })?;
+                let body_expr = self.lower_expr(on_unit, Some(&unit_ty))?;
+                Ok(RustExpr::UnitMatch {
+                    scrut: Box::new(scrut_expr),
+                    body: Box::new(body_expr),
+                })
+            }
+            Term::BoolElim {
+                motive,
+                on_true,
+                on_false,
+                scrut,
+            } => {
+                let scrut_expr = self.lower_expr(scrut, Some(&Value::Bool))?;
+                let motive_cl = Closure::new(self.env.clone(), motive);
+                let true_ty =
+                    motive_cl
+                        .apply(self.arena, Value::True)
+                        .map_err(|err| CodegenError::Eval {
+                            decl: self.decl_name.clone(),
+                            err,
+                        })?;
+                let false_ty = motive_cl.apply(self.arena, Value::False).map_err(|err| {
+                    CodegenError::Eval {
+                        decl: self.decl_name.clone(),
+                        err,
+                    }
+                })?;
+                let true_expr = self.lower_expr(on_true, Some(&true_ty))?;
+                let false_expr = self.lower_expr(on_false, Some(&false_ty))?;
+                Ok(RustExpr::BoolMatch {
+                    scrut: Box::new(scrut_expr),
+                    on_true: Box::new(true_expr),
+                    on_false: Box::new(false_expr),
+                })
+            }
+            Term::NatElim {
+                motive,
+                base,
+                step,
+                scrut,
+            } => self.lower_nat_elim(motive, base, step, scrut),
+            _ => Err(CodegenError::UnsupportedExpr {
+                decl: self.decl_name.clone(),
+            }),
+        }
+    }
+
+    fn lower_nat_elim(
+        &mut self,
+        motive: TermId,
+        base: TermId,
+        step: TermId,
+        scrut: TermId,
+    ) -> Result<RustExpr, CodegenError> {
+        let scrut_expr = self.lower_expr(scrut, Some(&Value::Nat))?;
+        let motive_cl = Closure::new(self.env.clone(), motive);
+        let base_ty =
+            motive_cl
+                .apply(self.arena, Value::Zero)
+                .map_err(|err| CodegenError::Eval {
+                    decl: self.decl_name.clone(),
+                    err,
+                })?;
+        let base_expr = self.lower_expr(base, Some(&base_ty))?;
+
+        let pred_id = self.alloc_id();
+        let pred_name = format!("v{pred_id}");
+        let k_var = self.push_binding(
+            Value::Nat,
+            Binding::Runtime {
+                id: pred_id,
+                name: pred_name.clone(),
+            },
+        );
+        let ih_ty =
+            motive_cl
+                .apply(self.arena, k_var.clone())
+                .map_err(|err| CodegenError::Eval {
+                    decl: self.decl_name.clone(),
+                    err,
+                })?;
+        let acc_ty = match self.lower_val_ty(&ih_ty, Multiplicity::One) {
+            Ok(ty) => ty,
+            Err(err) => {
+                self.pop_binding();
+                return Err(err);
+            }
+        };
+        let succ_ty = match motive_cl.apply(self.arena, Value::Succ(Arc::new(k_var))) {
+            Ok(ty) => ty,
+            Err(err) => {
+                self.pop_binding();
+                return Err(CodegenError::Eval {
+                    decl: self.decl_name.clone(),
+                    err,
+                });
+            }
+        };
+
+        let acc_id = self.alloc_id();
+        let acc_name = format!("v{acc_id}");
+        let _ = self.push_binding(
+            ih_ty,
+            Binding::Runtime {
+                id: acc_id,
+                name: acc_name.clone(),
+            },
+        );
+        let step_res = self.lower_expr(step, Some(&succ_ty));
+        self.pop_binding();
+        self.pop_binding();
+        let step_expr = step_res?;
+
+        Ok(RustExpr::NatLoop {
+            scrut: Box::new(scrut_expr),
+            acc_id,
+            acc_name,
+            acc_ty,
+            pred_id,
+            pred_name,
+            base: Box::new(base_expr),
+            step: Box::new(step_expr),
+        })
     }
 
     fn lower_cubical(
@@ -568,6 +737,7 @@ impl<'a> DeclLowerer<'a> {
             ty: g_ty,
         }) = self.arena.get(head)
             && let Some(sig) = self.globals.get(&(g_ty, g_body)).cloned()
+            && rev_args.len() <= sig.param_keep.len()
         {
             return self.lower_global_call(&sig, head, &rev_args);
         }
@@ -1075,6 +1245,138 @@ pub fn r#struct<A>(r#type: A) -> A {
             },
         ] {
             assert_ne!(sample.to_string(), "");
+        }
+    }
+
+    #[test]
+    fn extracts_void_unit_and_bool_match() {
+        let src = r"
+            fn absurd(0 A: Type 0, 1 v: Void) -> A {
+                match v {}
+            }
+
+            fn unit_id(1 u: Unit) -> Unit {
+                match u {
+                    () => (),
+                }
+            }
+
+            fn not(1 b: Bool) -> Bool {
+                match b {
+                    true => false,
+                    false => true,
+                }
+            }
+
+            fn and(1 a: Bool, ω b: Bool) -> Bool {
+                match a {
+                    true => b,
+                    false => false,
+                }
+            }
+
+            fn choose(0 A: Type 0, 1 b: Bool, 1 x: A) -> A {
+                match b {
+                    true => x,
+                    false => x,
+                }
+            }
+
+            theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+                match b as |x| Path(_ => Bool, not(not(x)), x) {
+                    true => <i> true,
+                    false => <i> false,
+                }
+            }
+        ";
+
+        let emitted = compile_source(src);
+        assert!(emitted.is_ok(), "unexpected error: {:?}", emitted.err());
+        if let Ok(code) = emitted {
+            assert!(!code.contains("not_not"));
+            assert!(code.contains(
+                "pub fn absurd<A>(v: core::convert::Infallible) -> A {\n    match v {}\n}"
+            ));
+            assert!(code.contains("pub fn unit_id(u: ()) -> () {\n    match u { () => () }\n}"));
+            assert!(
+                code.contains("pub fn not(b: bool) -> bool {\n    if b { false } else { true }\n}")
+            );
+            assert!(code.contains(
+                "pub fn and(a: bool, b: bool) -> bool {\n    if a { b } else { false }\n}"
+            ));
+            assert!(
+                code.contains(
+                    "pub fn choose<A>(b: bool, x: A) -> A {\n    if b { x } else { x }\n}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn extracts_nat_loops_and_cloning() {
+        let src = r"
+            fn two() -> Nat {
+                succ(succ(zero))
+            }
+
+            fn pred(1 n: Nat) -> Nat {
+                match n {
+                    zero => zero,
+                    succ(k) => k,
+                }
+            }
+
+            fn add(1 n: Nat, 1 m: Nat) -> Nat {
+                match n {
+                    zero => m,
+                    succ(_, acc) => succ(acc),
+                }
+            }
+
+            fn add_two(1 n: Nat) -> Nat {
+                add(two, n)
+            }
+
+            theorem add_zero_right(0 n: Nat) -> Path(_ => Nat, add(n, zero), n) {
+                match n as |x| Path(_ => Nat, add(x, zero), x) {
+                    zero => <i> zero,
+                    succ(k, ih) => <i> succ(ih @ i),
+                }
+            }
+
+            fn mul(1 n: Nat, ω m: Nat) -> Nat {
+                match n {
+                    zero => zero,
+                    succ(_, acc) => add(m, acc),
+                }
+            }
+
+            fn repeat(0 A: Type 0, 1 n: Nat, ω x: A) -> A {
+                match n {
+                    zero => x,
+                    succ(_, _) => x,
+                }
+            }
+
+            fn flip_n(0 A: Type 0, 1 n: Nat, 1 p: Sigma(1 _: A, A)) -> Sigma(1 _: A, A) {
+                match n {
+                    zero => p,
+                    succ(_, acc) => (acc.1, acc.0),
+                }
+            }
+        ";
+
+        let emitted = compile_source(src);
+        assert!(emitted.is_ok(), "unexpected error: {:?}", emitted.err());
+        if let Ok(code) = emitted {
+            assert!(!code.contains("add_zero_right"));
+            assert!(code.contains("pub fn two() -> u128 {\n    2_u128\n}"));
+            assert!(code.contains("pub fn add_two(n: u128) -> u128 {\n    add(two(), n)\n}"));
+            assert!(code.contains("pub fn pred(n: u128) -> u128 {\n    let mut v2: u128 = 0_u128;\n    for v1 in 0..n {\n        v2 = v1;\n    }\n    v2\n}"));
+            assert!(code.contains("pub fn add(n: u128, m: u128) -> u128 {\n    let mut v3: u128 = m;\n    for _v2 in 0..n {\n        v3 = v3 + 1;\n    }\n    v3\n}"));
+            assert!(code.contains("pub fn mul(n: u128, m: u128) -> u128 {\n    let mut v3: u128 = 0_u128;\n    for _v2 in 0..n {\n        v3 = add(m, v3);\n    }\n    v3\n}"));
+            assert!(code.contains("pub fn repeat<A: Clone>(n: u128, x: A) -> A {\n    let mut v3: A = x.clone();\n    for _v2 in 0..n {\n        v3 = x.clone();\n    }\n    v3\n}"));
+            assert!(code.contains("pub fn flip_n<A: Clone>(n: u128, p: (A, A)) -> (A, A) {\n    let mut v3: (A, A) = p;\n    for _v2 in 0..n {\n        v3 = (v3.clone().1, v3.0);\n    }\n    v3\n}"));
         }
     }
 }

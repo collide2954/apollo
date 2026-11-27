@@ -1419,10 +1419,21 @@ mod tests {
 
         let line_a = arena.app(v2, v0);
         let line_b = arena.app(v1, v0);
+        let i_var_env = vec![
+            Value::var(DeBruijnLevel(0)),
+            Value::var(DeBruijnLevel(1)),
+            Value::dim_var(2),
+        ];
         let stuck_a = arena.coe(line_a, d0, d1, v0);
         let stuck_b = arena.coe(line_a, d1, d0, v0);
+        let stuck_same_src = arena.coe(line_a, d0, v0, v1);
+        let stuck_same_src_d1 = arena.coe(line_a, d0, d1, v1);
         let stuck_c = arena.coe(line_a, d0, d1, v1);
         let stuck_d = arena.coe(line_b, d0, d1, v0);
+        let line_lam_a = arena.lam(Multiplicity::One, v1);
+        let line_lam_b = arena.lam(Multiplicity::One, v0);
+        let stuck_lam_a = arena.coe(line_lam_a, d0, d1, v1);
+        let stuck_lam_b = arena.coe(line_lam_b, d0, d1, v1);
         if let (Ok(va), Ok(vb), Ok(vc), Ok(vd)) = (
             eval(&arena, &env, stuck_a),
             eval(&arena, &env, stuck_b),
@@ -1434,6 +1445,18 @@ mod tests {
             assert_eq!(conv(&arena, 3, &va, &vb), Ok(false));
             assert_eq!(conv(&arena, 3, &va, &vc), Ok(false));
             assert_eq!(conv(&arena, 3, &va, &vd), Ok(false));
+        }
+        if let (Ok(vs1), Ok(vs2)) = (
+            eval(&arena, &i_var_env, stuck_same_src),
+            eval(&arena, &i_var_env, stuck_same_src_d1),
+        ) {
+            assert_eq!(conv(&arena, 3, &vs1, &vs2), Ok(false));
+        }
+        if let (Ok(vl1), Ok(vl2)) = (
+            eval(&arena, &i_var_env, stuck_lam_a),
+            eval(&arena, &i_var_env, stuck_lam_b),
+        ) {
+            assert_eq!(conv(&arena, 3, &vl1, &vl2), Ok(false));
         }
     }
 
@@ -1476,7 +1499,12 @@ mod tests {
             id_fn,
         );
         let pi_hcom_app = arena.app(pi_hcom, u0);
-        assert!(eval(&arena, &env, pi_hcom_app).is_ok());
+        let expected_pi_app =
+            arena.hcom(u1, d0, d1, vec![(crate::term::CofTerm::Eq(d0, v0), u0)], u0);
+        assert_eq!(
+            eval(&arena, &env, pi_hcom_app).and_then(|v| quote(&mut arena, 3, &v)),
+            Ok(expected_pi_app)
+        );
 
         let face_i0 = crate::term::CofTerm::Eq(v0, d0);
         let face_i1 = crate::term::CofTerm::Eq(v0, d1);
@@ -1487,27 +1515,41 @@ mod tests {
                 Box::new(crate::term::CofTerm::Top),
             )),
         );
+        let tube_j = arena.app(v2, v0);
         let stuck_hcom_a = arena.hcom(
             v2,
             d0,
             d1,
-            vec![(face_or, v2), (crate::term::CofTerm::Bot, v2)],
+            vec![(face_or, tube_j), (crate::term::CofTerm::Bot, v2)],
             v1,
         );
-        let stuck_hcom_b = arena.hcom(v2, d0, d1, vec![(face_i0, v2)], v1);
-        let stuck_hcom_c = arena.hcom(v2, d1, d0, vec![(face_i1, v2)], v1);
+        let stuck_hcom_b = arena.hcom(v2, d0, d1, vec![(face_i0.clone(), tube_j)], v1);
+        let stuck_hcom_c = arena.hcom(v2, d1, d0, vec![(face_i1, tube_j)], v1);
         let stuck_hcom_d = arena.hcom(v2, d0, d1, vec![], v1);
-        if let (Ok(va), Ok(vb), Ok(vc), Ok(vd)) = (
+        let stuck_hcom_diff_dst = arena.hcom(v2, d0, v0, vec![(face_i0.clone(), tube_j)], v1);
+        let stuck_hcom_diff_ty = arena.hcom(v1, d0, d1, vec![(face_i0.clone(), tube_j)], v1);
+        let stuck_hcom_diff_cap = arena.hcom(v2, d0, d1, vec![(face_i0, tube_j)], v2);
+        if let (Ok(va), Ok(vb), Ok(vc), Ok(vd), Ok(ve), Ok(vf), Ok(vg)) = (
             eval(&arena, &env, stuck_hcom_a),
             eval(&arena, &env, stuck_hcom_b),
             eval(&arena, &env, stuck_hcom_c),
             eval(&arena, &env, stuck_hcom_d),
+            eval(&arena, &env, stuck_hcom_diff_dst),
+            eval(&arena, &env, stuck_hcom_diff_ty),
+            eval(&arena, &env, stuck_hcom_diff_cap),
         ) {
-            assert!(quote(&mut arena, 3, &va).is_ok());
+            let quoted_b = quote(&mut arena, 3, &vb);
+            assert!(quoted_b.is_ok());
+            if let Ok(qb) = quoted_b {
+                assert!(arena.format_term(qb).contains("(#2 #0)"));
+            }
             assert_eq!(conv(&arena, 3, &va, &va), Ok(true));
             assert_eq!(conv(&arena, 3, &va, &vb), Ok(false));
             assert_eq!(conv(&arena, 3, &va, &vc), Ok(false));
             assert_eq!(conv(&arena, 3, &va, &vd), Ok(false));
+            assert_eq!(conv(&arena, 3, &vb, &ve), Ok(false));
+            assert_eq!(conv(&arena, 3, &vb, &vf), Ok(false));
+            assert_eq!(conv(&arena, 3, &vb, &vg), Ok(false));
         }
     }
 }

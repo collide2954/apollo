@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -64,16 +65,13 @@ pub enum Cof {
 impl Cof {
     #[must_use]
     pub fn eq(lhs: Dim, rhs: Dim) -> Self {
-        if lhs == rhs {
-            return Self::Top;
-        }
-        if lhs.is_endpoint() && rhs.is_endpoint() {
-            return Self::Bot;
-        }
-        if lhs < rhs {
-            Self::Eq(lhs, rhs)
-        } else {
-            Self::Eq(rhs, lhs)
+        match lhs.cmp(&rhs) {
+            Ordering::Equal => Self::Top,
+            Ordering::Less | Ordering::Greater if lhs.is_endpoint() && rhs.is_endpoint() => {
+                Self::Bot
+            }
+            Ordering::Less => Self::Eq(lhs, rhs),
+            Ordering::Greater => Self::Eq(rhs, lhs),
         }
     }
 
@@ -190,16 +188,13 @@ impl Face {
     pub fn equate(&self, lhs: Dim, rhs: Dim) -> Option<Self> {
         let r_lhs = self.canonical_dim(lhs);
         let r_rhs = self.canonical_dim(rhs);
-        if r_lhs == r_rhs {
-            return Some(self.clone());
-        }
-        if r_lhs.is_endpoint() && r_rhs.is_endpoint() {
-            return None;
-        }
-        let (root, child) = if r_lhs < r_rhs {
-            (r_lhs, r_rhs)
-        } else {
-            (r_rhs, r_lhs)
+        let (root, child) = match r_lhs.cmp(&r_rhs) {
+            Ordering::Equal => return Some(self.clone()),
+            Ordering::Less | Ordering::Greater if r_lhs.is_endpoint() && r_rhs.is_endpoint() => {
+                return None;
+            }
+            Ordering::Less => (r_lhs, r_rhs),
+            Ordering::Greater => (r_rhs, r_lhs),
         };
         let mut next = self.clone();
         next.parent.insert(child, root);

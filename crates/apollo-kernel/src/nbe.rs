@@ -935,6 +935,7 @@ mod tests {
             eval(&arena, &[], nested_path_a),
             eval(&arena, &[], nested_path_b),
         ) {
+            assert_eq!(quote(&mut arena, 0, &va), Ok(nested_path_a));
             assert_eq!(conv(&arena, 0, &va, &vb), Ok(false));
         }
 

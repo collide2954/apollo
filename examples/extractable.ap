@@ -1,0 +1,45 @@
+fn id(0 A: Type 0, 1 x: A) -> A {
+    x
+}
+
+fn dup(0 A: Type 0, ω x: A) -> Sigma(1 _: A, A) {
+    (x, x)
+}
+
+fn swap(0 A: Type 0, 0 B: Type 0, ω p: Sigma(1 _: A, B)) -> Sigma(1 _: B, A) {
+    (p.1, p.0)
+}
+
+fn apply(0 A: Type 0, 0 B: Type 0, 1 f: (1 _: A) -> B, 1 x: A) -> B {
+    f(x)
+}
+
+fn twice(0 A: Type 0, ω f: (1 _: A) -> A, 1 x: A) -> A {
+    f(f(x))
+}
+
+fn use_id(0 A: Type 0, 1 x: A) -> A {
+    let 1 y: A = id(A, x);
+    let 0 p: Path(_ => A, y, y) = <i> y;
+    y
+}
+
+fn apply_id(0 A: Type 0, 1 x: A) -> A {
+    apply(A, A, id(A), x)
+}
+
+fn const_fn(0 A: Type 0, 0 B: Type 0, 1 a: A) -> (ω _: B) -> A {
+    |ω b| a
+}
+
+fn refine(0 A: Type 0, 1 x: A) -> Sigma(1 y: A, Path(_ => A, y, y)) {
+    (x, <i> x)
+}
+
+fn unrefine(0 A: Type 0, 1 p: Sigma(1 y: A, Path(_ => A, y, y))) -> A {
+    p.0
+}
+
+theorem refl(0 A: Type 0, 0 x: A) -> Path(_ => A, x, x) {
+    <i> x
+}

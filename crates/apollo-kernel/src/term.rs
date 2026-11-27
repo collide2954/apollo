@@ -75,6 +75,21 @@ pub enum Term {
         term: TermId,
         ty: TermId,
     },
+    Interval,
+    DimZero,
+    DimOne,
+    Path {
+        family: TermId,
+        left: TermId,
+        right: TermId,
+    },
+    PLam(TermId),
+    PApp {
+        path: TermId,
+        left: TermId,
+        right: TermId,
+        dim: TermId,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -175,6 +190,45 @@ impl TermArena {
     }
 
     #[must_use]
+    pub fn interval(&mut self) -> TermId {
+        self.intern(Term::Interval)
+    }
+
+    #[must_use]
+    pub fn dim_zero(&mut self) -> TermId {
+        self.intern(Term::DimZero)
+    }
+
+    #[must_use]
+    pub fn dim_one(&mut self) -> TermId {
+        self.intern(Term::DimOne)
+    }
+
+    #[must_use]
+    pub fn path(&mut self, family: TermId, left: TermId, right: TermId) -> TermId {
+        self.intern(Term::Path {
+            family,
+            left,
+            right,
+        })
+    }
+
+    #[must_use]
+    pub fn plam(&mut self, body: TermId) -> TermId {
+        self.intern(Term::PLam(body))
+    }
+
+    #[must_use]
+    pub fn papp(&mut self, path: TermId, left: TermId, right: TermId, dim: TermId) -> TermId {
+        self.intern(Term::PApp {
+            path,
+            left,
+            right,
+            dim,
+        })
+    }
+
+    #[must_use]
     pub fn format_term(&self, id: TermId) -> String {
         let Some(term) = self.get(id) else {
             return format!("<invalid:{}>", id.raw());
@@ -215,6 +269,23 @@ impl TermArena {
             Term::Snd(pair) => format!("{}.1", self.format_term(*pair)),
             Term::Ann { term, ty } => {
                 format!("({} : {})", self.format_term(*term), self.format_term(*ty))
+            }
+            Term::Interval => "I".to_owned(),
+            Term::DimZero => "0".to_owned(),
+            Term::DimOne => "1".to_owned(),
+            Term::Path {
+                family,
+                left,
+                right,
+            } => format!(
+                "Path({}, {}, {})",
+                self.format_term(*family),
+                self.format_term(*left),
+                self.format_term(*right)
+            ),
+            Term::PLam(body) => format!("<i> {}", self.format_term(*body)),
+            Term::PApp { path, dim, .. } => {
+                format!("({} @ {})", self.format_term(*path), self.format_term(*dim))
             }
         }
     }
@@ -273,6 +344,12 @@ mod tests {
         let fst = arena.fst(pair);
         let snd = arena.snd(pair);
         let ann = arena.ann(x, u0);
+        let interval = arena.interval();
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let path = arena.path(u0, x, x);
+        let plam = arena.plam(x);
+        let papp = arena.papp(plam, x, x, d0);
 
         assert_eq!(arena.format_term(u0), "Type 0");
         assert_eq!(arena.format_term(pi), "(1 : Type 0) -> #0");
@@ -283,6 +360,12 @@ mod tests {
         assert_eq!(arena.format_term(fst), "(#0, Type 0).0");
         assert_eq!(arena.format_term(snd), "(#0, Type 0).1");
         assert_eq!(arena.format_term(ann), "(#0 : Type 0)");
+        assert_eq!(arena.format_term(interval), "I");
+        assert_eq!(arena.format_term(d0), "0");
+        assert_eq!(arena.format_term(d1), "1");
+        assert_eq!(arena.format_term(path), "Path(Type 0, #0, #0)");
+        assert_eq!(arena.format_term(plam), "<i> #0");
+        assert_eq!(arena.format_term(papp), "(<i> #0 @ 0)");
         assert_eq!(arena.format_term(TermId(999)), "<invalid:999>");
     }
 }

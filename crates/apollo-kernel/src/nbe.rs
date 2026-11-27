@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::cubical::{Dim, DimVar};
 use crate::level::Level;
 use crate::multiplicity::Multiplicity;
 use crate::term::{DeBruijnLevel, Index, Term, TermArena, TermId};
@@ -55,9 +56,18 @@ impl Closure {
 #[derive(Debug, Clone)]
 pub enum Neutral {
     Var(DeBruijnLevel),
-    App { func: Arc<Self>, arg: Value },
+    App {
+        func: Arc<Self>,
+        arg: Value,
+    },
     Fst(Arc<Self>),
     Snd(Arc<Self>),
+    PApp {
+        path: Arc<Self>,
+        left: Arc<Value>,
+        right: Arc<Value>,
+        dim: Dim,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +91,14 @@ pub enum Value {
         first: Arc<Self>,
         second: Arc<Self>,
     },
+    Interval,
+    Dim(Dim),
+    Path {
+        family: Closure,
+        left: Arc<Self>,
+        right: Arc<Self>,
+    },
+    PLam(Closure),
     Neutral(Arc<Neutral>),
 }
 
@@ -88,6 +106,11 @@ impl Value {
     #[must_use]
     pub fn var(level: DeBruijnLevel) -> Self {
         Self::Neutral(Arc::new(Neutral::Var(level)))
+    }
+
+    #[must_use]
+    pub const fn dim_var(level: u32) -> Self {
+        Self::Dim(Dim::Var(DimVar(level)))
     }
 }
 
@@ -155,6 +178,59 @@ pub fn eval(arena: &TermArena, env: &[Value], id: TermId) -> Result<Value, EvalE
             Ok(proj_snd(&pair_val))
         }
         Term::Ann { term, .. } => eval(arena, env, *term),
+        Term::Interval => Ok(Value::Interval),
+        Term::DimZero => Ok(Value::Dim(Dim::Zero)),
+        Term::DimOne => Ok(Value::Dim(Dim::One)),
+        Term::Path {
+            family,
+            left,
+            right,
+        } => {
+            let left_val = eval(arena, env, *left)?;
+            let right_val = eval(arena, env, *right)?;
+            Ok(Value::Path {
+                family: Closure::new(env.to_vec(), *family),
+                left: Arc::new(left_val),
+                right: Arc::new(right_val),
+            })
+        }
+        Term::PLam(body) => Ok(Value::PLam(Closure::new(env.to_vec(), *body))),
+        Term::PApp {
+            path,
+            left,
+            right,
+            dim,
+        } => {
+            let dim_val = eval(arena, env, *dim)?;
+            let left_val = eval(arena, env, *left)?;
+            let right_val = eval(arena, env, *right)?;
+            let path_val = eval(arena, env, *path)?;
+            papp(arena, &path_val, &left_val, &right_val, &dim_val)
+        }
+    }
+}
+
+pub fn papp(
+    arena: &TermArena,
+    path: &Value,
+    left: &Value,
+    right: &Value,
+    dim: &Value,
+) -> Result<Value, EvalError> {
+    match dim {
+        Value::Dim(Dim::Zero) => Ok(left.clone()),
+        Value::Dim(Dim::One) => Ok(right.clone()),
+        Value::Dim(dim_val) => match path {
+            Value::PLam(body) => body.apply(arena, Value::Dim(*dim_val)),
+            Value::Neutral(neutral) => Ok(Value::Neutral(Arc::new(Neutral::PApp {
+                path: Arc::clone(neutral),
+                left: Arc::new(left.clone()),
+                right: Arc::new(right.clone()),
+                dim: *dim_val,
+            }))),
+            other => Ok(other.clone()),
+        },
+        _ => Ok(path.clone()),
     }
 }
 
@@ -223,6 +299,32 @@ pub fn quote(arena: &mut TermArena, depth: u32, value: &Value) -> Result<TermId,
             let second_id = quote(arena, depth, second)?;
             Ok(arena.pair(first_id, second_id))
         }
+        Value::Interval => Ok(arena.interval()),
+        Value::Dim(Dim::Zero) => Ok(arena.dim_zero()),
+        Value::Dim(Dim::One) => Ok(arena.dim_one()),
+        Value::Dim(Dim::Var(DimVar(lvl))) => {
+            let level = DeBruijnLevel(*lvl);
+            let index = level
+                .to_index(depth)
+                .ok_or(EvalError::InvalidLevel { level, depth })?;
+            Ok(arena.var(index))
+        }
+        Value::Path {
+            family,
+            left,
+            right,
+        } => {
+            let fam_val = family.apply(arena, Value::dim_var(depth))?;
+            let fam_id = quote(arena, depth + 1, &fam_val)?;
+            let left_id = quote(arena, depth, left)?;
+            let right_id = quote(arena, depth, right)?;
+            Ok(arena.path(fam_id, left_id, right_id))
+        }
+        Value::PLam(body) => {
+            let body_val = body.apply(arena, Value::dim_var(depth))?;
+            let body_id = quote(arena, depth + 1, &body_val)?;
+            Ok(arena.plam(body_id))
+        }
         Value::Neutral(neutral) => quote_neutral(arena, depth, neutral),
     }
 }
@@ -253,7 +355,31 @@ fn quote_neutral(
             let pair_id = quote_neutral(arena, depth, pair)?;
             Ok(arena.snd(pair_id))
         }
+        Neutral::PApp {
+            path,
+            left,
+            right,
+            dim,
+        } => {
+            let path_id = quote_neutral(arena, depth, path)?;
+            let left_id = quote(arena, depth, left)?;
+            let right_id = quote(arena, depth, right)?;
+            let dim_id = quote(arena, depth, &Value::Dim(*dim))?;
+            Ok(arena.papp(path_id, left_id, right_id, dim_id))
+        }
     }
+}
+
+fn conv_closures(
+    arena: &TermArena,
+    depth: u32,
+    arg: Value,
+    lhs: &Closure,
+    rhs: &Closure,
+) -> Result<bool, EvalError> {
+    let v1 = lhs.apply(arena, arg.clone())?;
+    let v2 = rhs.apply(arena, arg)?;
+    conv(arena, depth + 1, &v1, &v2)
 }
 
 pub fn conv(arena: &TermArena, depth: u32, lhs: &Value, rhs: &Value) -> Result<bool, EvalError> {
@@ -274,19 +400,13 @@ pub fn conv(arena: &TermArena, depth: u32, lhs: &Value, rhs: &Value) -> Result<b
             if m1 != m2 || !conv(arena, depth, d1, d2)? {
                 return Ok(false);
             }
-            let var = Value::var(DeBruijnLevel(depth));
-            let v1 = c1.apply(arena, var.clone())?;
-            let v2 = c2.apply(arena, var)?;
-            conv(arena, depth + 1, &v1, &v2)
+            conv_closures(arena, depth, Value::var(DeBruijnLevel(depth)), c1, c2)
         }
         (Value::Lam { mult: m1, body: b1 }, Value::Lam { mult: m2, body: b2 }) => {
             if m1 != m2 {
                 return Ok(false);
             }
-            let var = Value::var(DeBruijnLevel(depth));
-            let v1 = b1.apply(arena, var.clone())?;
-            let v2 = b2.apply(arena, var)?;
-            conv(arena, depth + 1, &v1, &v2)
+            conv_closures(arena, depth, Value::var(DeBruijnLevel(depth)), b1, b2)
         }
         (Value::Lam { body, .. }, other @ Value::Neutral(_))
         | (other @ Value::Neutral(_), Value::Lam { body, .. }) => {
@@ -310,10 +430,7 @@ pub fn conv(arena: &TermArena, depth: u32, lhs: &Value, rhs: &Value) -> Result<b
             if m1 != m2 || !conv(arena, depth, f1, f2)? {
                 return Ok(false);
             }
-            let var = Value::var(DeBruijnLevel(depth));
-            let v1 = s1.apply(arena, var.clone())?;
-            let v2 = s2.apply(arena, var)?;
-            conv(arena, depth + 1, &v1, &v2)
+            conv_closures(arena, depth, Value::var(DeBruijnLevel(depth)), s1, s2)
         }
         (
             Value::Pair {
@@ -329,6 +446,28 @@ pub fn conv(arena: &TermArena, depth: u32, lhs: &Value, rhs: &Value) -> Result<b
         | (other @ Value::Neutral(_), Value::Pair { first, second }) => {
             Ok(conv(arena, depth, first, &proj_fst(other))?
                 && conv(arena, depth, second, &proj_snd(other))?)
+        }
+        (Value::Interval, Value::Interval) => Ok(true),
+        (Value::Dim(d1), Value::Dim(d2)) => Ok(d1 == d2),
+        (
+            Value::Path {
+                family: f1,
+                left: l1,
+                right: r1,
+            },
+            Value::Path {
+                family: f2,
+                left: l2,
+                right: r2,
+            },
+        ) => {
+            if !conv(arena, depth, l1, l2)? || !conv(arena, depth, r1, r2)? {
+                return Ok(false);
+            }
+            conv_closures(arena, depth, Value::dim_var(depth), f1, f2)
+        }
+        (Value::PLam(b1), Value::PLam(b2)) => {
+            conv_closures(arena, depth, Value::dim_var(depth), b1, b2)
         }
         (Value::Neutral(n1), Value::Neutral(n2)) => conv_neutral(arena, depth, n1, n2),
         _ => Ok(false),
@@ -349,6 +488,14 @@ fn conv_neutral(
         (Neutral::Fst(p1), Neutral::Fst(p2)) | (Neutral::Snd(p1), Neutral::Snd(p2)) => {
             conv_neutral(arena, depth, p1, p2)
         }
+        (
+            Neutral::PApp {
+                path: p1, dim: d1, ..
+            },
+            Neutral::PApp {
+                path: p2, dim: d2, ..
+            },
+        ) => Ok(d1 == d2 && conv_neutral(arena, depth, p1, p2)?),
         _ => Ok(false),
     }
 }
@@ -676,5 +823,133 @@ mod tests {
             assert_eq!(conv(&arena, 2, &vf0, &vf1), Ok(false));
             assert_eq!(conv(&arena, 2, &vf0, &vg0), Ok(false));
         }
+    }
+
+    #[test]
+    fn evaluates_and_quotes_cubical_path_reductions() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let u1 = arena.universe(Level::constant(1));
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let interval = arena.interval();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+
+        let env = vec![
+            Value::var(DeBruijnLevel(0)),
+            Value::var(DeBruijnLevel(1)),
+            Value::dim_var(2),
+            Value::dim_var(3),
+        ];
+
+        let p_at_0 = arena.papp(v3, u0, u1, d0);
+        let p_at_1 = arena.papp(v3, u0, u1, d1);
+        assert_eq!(
+            eval(&arena, &env, p_at_0).and_then(|v| quote(&mut arena, 4, &v)),
+            Ok(u0)
+        );
+        assert_eq!(
+            eval(&arena, &env, p_at_1).and_then(|v| quote(&mut arena, 4, &v)),
+            Ok(u1)
+        );
+
+        let plam_const = arena.plam(u0);
+        let beta_papp = arena.papp(plam_const, u0, u0, v1);
+        assert_eq!(
+            eval(&arena, &env, beta_papp).and_then(|v| quote(&mut arena, 4, &v)),
+            Ok(u0)
+        );
+
+        let p_at_i = arena.papp(v3, u0, u1, v1);
+        let p_at_j = arena.papp(v3, u0, u1, v0);
+        let q_at_i = arena.papp(v2, u0, u1, v1);
+        if let (Ok(vpi), Ok(vpj), Ok(vqi)) = (
+            eval(&arena, &env, p_at_i),
+            eval(&arena, &env, p_at_j),
+            eval(&arena, &env, q_at_i),
+        ) {
+            assert_eq!(quote(&mut arena, 4, &vpi), Ok(p_at_i));
+            assert_eq!(conv(&arena, 4, &vpi, &vpi), Ok(true));
+            assert_eq!(conv(&arena, 4, &vpi, &vpj), Ok(false));
+            assert_eq!(conv(&arena, 4, &vpi, &vqi), Ok(false));
+        }
+
+        assert_eq!(
+            eval(&arena, &[], interval).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(interval)
+        );
+        assert_eq!(
+            eval(&arena, &[], d0).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(d0)
+        );
+        assert_eq!(
+            eval(&arena, &[], d1).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(d1)
+        );
+    }
+
+    #[test]
+    fn converts_nested_cubical_paths() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let u1 = arena.universe(Level::constant(1));
+        let d0 = arena.dim_zero();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+
+        let path_a = arena.path(u0, u0, u0);
+        let path_b = arena.path(u0, u0, u1);
+        let path_c = arena.path(u0, u1, u0);
+        if let (Ok(va), Ok(vb), Ok(vc)) = (
+            eval(&arena, &[], path_a),
+            eval(&arena, &[], path_b),
+            eval(&arena, &[], path_c),
+        ) {
+            assert_eq!(quote(&mut arena, 0, &va), Ok(path_a));
+            assert_eq!(conv(&arena, 0, &va, &va), Ok(true));
+            assert_eq!(conv(&arena, 0, &va, &vb), Ok(false));
+            assert_eq!(conv(&arena, 0, &va, &vc), Ok(false));
+        }
+
+        let inner_plam_a = arena.plam(v1);
+        let nested_plam_a = arena.plam(inner_plam_a);
+        let inner_plam_b = arena.plam(v0);
+        let nested_plam_b = arena.plam(inner_plam_b);
+        if let (Ok(va), Ok(vb)) = (
+            eval(&arena, &[], nested_plam_a),
+            eval(&arena, &[], nested_plam_b),
+        ) {
+            assert_eq!(quote(&mut arena, 0, &va), Ok(nested_plam_a));
+            assert_eq!(conv(&arena, 0, &va, &va), Ok(true));
+            assert_eq!(conv(&arena, 0, &va, &vb), Ok(false));
+        }
+
+        let nested_path_inner_a = arena.path(v1, d0, d0);
+        let nested_path_a = arena.path(nested_path_inner_a, d0, d0);
+        let nested_path_inner_b = arena.path(v0, d0, d0);
+        let nested_path_b = arena.path(nested_path_inner_b, d0, d0);
+        if let (Ok(va), Ok(vb)) = (
+            eval(&arena, &[], nested_path_a),
+            eval(&arena, &[], nested_path_b),
+        ) {
+            assert_eq!(conv(&arena, 0, &va, &vb), Ok(false));
+        }
+
+        assert_eq!(
+            conv(&arena, 0, &Value::Interval, &Value::Interval),
+            Ok(true)
+        );
+        assert_eq!(
+            conv(
+                &arena,
+                0,
+                &Value::Dim(crate::cubical::Dim::Zero),
+                &Value::Dim(crate::cubical::Dim::One),
+            ),
+            Ok(false)
+        );
     }
 }

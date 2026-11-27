@@ -1,0 +1,15 @@
+[package]
+name = "apollo-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "apollo"
+path = "src/main.rs"
+
+[dependencies]
+apollo-kernel.workspace = true
+
+[lints]
+workspace = true

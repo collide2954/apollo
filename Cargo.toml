@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/apollo-auto",
+    "crates/apollo-cli",
+    "crates/apollo-codegen",
+    "crates/apollo-elab",
+    "crates/apollo-kernel",
+    "crates/apollo-lsp",
+    "crates/apollo-query",
+    "crates/apollo-syntax",
+    "xtask",
+]
+default-members = [
+    "crates/apollo-auto",
+    "crates/apollo-cli",
+    "crates/apollo-codegen",
+    "crates/apollo-elab",
+    "crates/apollo-kernel",
+    "crates/apollo-lsp",
+    "crates/apollo-query",
+    "crates/apollo-syntax",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[workspace.dependencies]
+apollo-kernel = { path = "crates/apollo-kernel" }

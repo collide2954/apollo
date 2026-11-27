@@ -35,21 +35,103 @@ impl std::error::Error for EvalError {}
 pub type Env = Vec<Value>;
 
 #[derive(Debug, Clone)]
-pub struct Closure {
-    env: Env,
-    body: TermId,
+pub enum TypeLine {
+    Closure(Closure),
+    PiDom(Box<Self>),
+    PiCod {
+        line: Box<Self>,
+        dst: Dim,
+        arg: Arc<Value>,
+    },
+    SigmaFirst(Box<Self>),
+    SigmaSecond {
+        line: Box<Self>,
+        src: Dim,
+        first_at_src: Arc<Value>,
+    },
+}
+
+impl TypeLine {
+    pub fn apply(&self, arena: &TermArena, dim: Dim) -> Result<Value, EvalError> {
+        match self {
+            Self::Closure(closure) => closure.apply(arena, Value::Dim(dim)),
+            Self::PiDom(line) => match line.apply(arena, dim)? {
+                Value::Pi { domain, .. } => Ok((*domain).clone()),
+                other => Ok(other),
+            },
+            Self::PiCod { line, dst, arg } => match line.apply(arena, dim)? {
+                Value::Pi { codomain, .. } => {
+                    let dom_line = Self::PiDom(line.clone());
+                    let arg_at_dim = coe_line(arena, &dom_line, *dst, dim, (**arg).clone())?;
+                    codomain.apply(arena, arg_at_dim)
+                }
+                other => Ok(other),
+            },
+            Self::SigmaFirst(line) => match line.apply(arena, dim)? {
+                Value::Sigma { first, .. } => Ok((*first).clone()),
+                other => Ok(other),
+            },
+            Self::SigmaSecond {
+                line,
+                src,
+                first_at_src,
+            } => match line.apply(arena, dim)? {
+                Value::Sigma { second, .. } => {
+                    let fst_line = Self::SigmaFirst(line.clone());
+                    let fst_at_dim =
+                        coe_line(arena, &fst_line, *src, dim, (**first_at_src).clone())?;
+                    second.apply(arena, fst_at_dim)
+                }
+                other => Ok(other),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Closure {
+    Term {
+        env: Env,
+        body: TermId,
+    },
+    CoePi {
+        line: Box<TypeLine>,
+        src: Dim,
+        dst: Dim,
+        func: Arc<Value>,
+    },
 }
 
 impl Closure {
     #[must_use]
     pub const fn new(env: Env, body: TermId) -> Self {
-        Self { env, body }
+        Self::Term { env, body }
     }
 
     pub fn apply(&self, arena: &TermArena, arg: Value) -> Result<Value, EvalError> {
-        let mut next_env = self.env.clone();
-        next_env.push(arg);
-        eval(arena, &next_env, self.body)
+        match self {
+            Self::Term { env, body } => {
+                let mut next_env = env.clone();
+                next_env.push(arg);
+                eval(arena, &next_env, *body)
+            }
+            Self::CoePi {
+                line,
+                src,
+                dst,
+                func,
+            } => {
+                let dom_line = TypeLine::PiDom(line.clone());
+                let arg_at_src = coe_line(arena, &dom_line, *dst, *src, arg.clone())?;
+                let applied = apply(arena, func, arg_at_src)?;
+                let cod_line = TypeLine::PiCod {
+                    line: line.clone(),
+                    dst: *dst,
+                    arg: Arc::new(arg),
+                };
+                coe_line(arena, &cod_line, *src, *dst, applied)
+            }
+        }
     }
 }
 
@@ -67,6 +149,12 @@ pub enum Neutral {
         left: Arc<Value>,
         right: Arc<Value>,
         dim: Dim,
+    },
+    Coe {
+        line: Box<TypeLine>,
+        src: Dim,
+        dst: Dim,
+        term: Arc<Value>,
     },
 }
 
@@ -207,6 +295,77 @@ pub fn eval(arena: &TermArena, env: &[Value], id: TermId) -> Result<Value, EvalE
             let path_val = eval(arena, env, *path)?;
             papp(arena, &path_val, &left_val, &right_val, &dim_val)
         }
+        Term::Coe {
+            line,
+            src,
+            dst,
+            term,
+        } => eval_coe(arena, env, *line, *src, *dst, *term),
+    }
+}
+
+fn eval_coe(
+    arena: &TermArena,
+    env: &[Value],
+    line: TermId,
+    src: TermId,
+    dst: TermId,
+    term: TermId,
+) -> Result<Value, EvalError> {
+    let src_val = eval(arena, env, src)?;
+    let dst_val = eval(arena, env, dst)?;
+    let term_val = eval(arena, env, term)?;
+    let type_line = TypeLine::Closure(Closure::new(env.to_vec(), line));
+    match (src_val, dst_val) {
+        (Value::Dim(s), Value::Dim(d)) => coe_line(arena, &type_line, s, d, term_val),
+        _ => Ok(term_val),
+    }
+}
+
+pub fn coe_line(
+    arena: &TermArena,
+    line: &TypeLine,
+    src: Dim,
+    dst: Dim,
+    term: Value,
+) -> Result<Value, EvalError> {
+    if src == dst {
+        return Ok(term);
+    }
+    let probe = Dim::Var(DimVar(u32::MAX));
+    match line.apply(arena, probe)? {
+        Value::Universe(_) => Ok(term),
+        Value::Pi { mult, .. } => Ok(Value::Lam {
+            mult,
+            body: Closure::CoePi {
+                line: Box::new(line.clone()),
+                src,
+                dst,
+                func: Arc::new(term),
+            },
+        }),
+        Value::Sigma { .. } => {
+            let p0 = proj_fst(&term);
+            let p1 = proj_snd(&term);
+            let fst_line = TypeLine::SigmaFirst(Box::new(line.clone()));
+            let c0 = coe_line(arena, &fst_line, src, dst, p0.clone())?;
+            let snd_line = TypeLine::SigmaSecond {
+                line: Box::new(line.clone()),
+                src,
+                first_at_src: Arc::new(p0),
+            };
+            let c1 = coe_line(arena, &snd_line, src, dst, p1)?;
+            Ok(Value::Pair {
+                first: Arc::new(c0),
+                second: Arc::new(c1),
+            })
+        }
+        _ => Ok(Value::Neutral(Arc::new(Neutral::Coe {
+            line: Box::new(line.clone()),
+            src,
+            dst,
+            term: Arc::new(term),
+        }))),
     }
 }
 
@@ -367,6 +526,19 @@ fn quote_neutral(
             let dim_id = quote(arena, depth, &Value::Dim(*dim))?;
             Ok(arena.papp(path_id, left_id, right_id, dim_id))
         }
+        Neutral::Coe {
+            line,
+            src,
+            dst,
+            term,
+        } => {
+            let line_val = line.apply(arena, Dim::Var(DimVar(depth)))?;
+            let line_id = quote(arena, depth + 1, &line_val)?;
+            let src_id = quote(arena, depth, &Value::Dim(*src))?;
+            let dst_id = quote(arena, depth, &Value::Dim(*dst))?;
+            let term_id = quote(arena, depth, term)?;
+            Ok(arena.coe(line_id, src_id, dst_id, term_id))
+        }
     }
 }
 
@@ -496,6 +668,28 @@ fn conv_neutral(
                 path: p2, dim: d2, ..
             },
         ) => Ok(d1 == d2 && conv_neutral(arena, depth, p1, p2)?),
+        (
+            Neutral::Coe {
+                line: l1,
+                src: s1,
+                dst: d1,
+                term: t1,
+            },
+            Neutral::Coe {
+                line: l2,
+                src: s2,
+                dst: d2,
+                term: t2,
+            },
+        ) => {
+            if s1 != s2 || d1 != d2 || !conv(arena, depth, t1, t2)? {
+                return Ok(false);
+            }
+            let dim = Dim::Var(DimVar(depth));
+            let v1 = l1.apply(arena, dim)?;
+            let v2 = l2.apply(arena, dim)?;
+            conv(arena, depth + 1, &v1, &v2)
+        }
         _ => Ok(false),
     }
 }
@@ -952,5 +1146,71 @@ mod tests {
             ),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn computes_and_quotes_cartesian_coercion() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let u1 = arena.universe(Level::constant(1));
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+
+        let env = vec![
+            Value::var(DeBruijnLevel(0)),
+            Value::var(DeBruijnLevel(1)),
+            Value::var(DeBruijnLevel(2)),
+        ];
+
+        let deg = arena.coe(v1, d0, d0, v0);
+        assert_eq!(
+            eval(&arena, &env, deg).and_then(|v| quote(&mut arena, 3, &v)),
+            Ok(v0)
+        );
+
+        let coe_univ = arena.coe(u1, d0, d1, u0);
+        assert_eq!(
+            eval(&arena, &[], coe_univ).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(u0)
+        );
+
+        let pi_line = arena.pi(Multiplicity::One, u1, u1);
+        let id_fn = arena.lam(Multiplicity::One, v0);
+        let coe_pi = arena.coe(pi_line, d0, d1, id_fn);
+        let coe_pi_app = arena.app(coe_pi, u0);
+        assert_eq!(
+            eval(&arena, &[], coe_pi_app).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(u0)
+        );
+
+        let sig_line = arena.sigma(Multiplicity::One, u1, u1);
+        let pair_val = arena.pair(u0, u0);
+        let coe_sig = arena.coe(sig_line, d0, d1, pair_val);
+        assert_eq!(
+            eval(&arena, &[], coe_sig).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(pair_val)
+        );
+
+        let line_a = arena.app(v2, v0);
+        let line_b = arena.app(v1, v0);
+        let stuck_a = arena.coe(line_a, d0, d1, v0);
+        let stuck_b = arena.coe(line_a, d1, d0, v0);
+        let stuck_c = arena.coe(line_a, d0, d1, v1);
+        let stuck_d = arena.coe(line_b, d0, d1, v0);
+        if let (Ok(va), Ok(vb), Ok(vc), Ok(vd)) = (
+            eval(&arena, &env, stuck_a),
+            eval(&arena, &env, stuck_b),
+            eval(&arena, &env, stuck_c),
+            eval(&arena, &env, stuck_d),
+        ) {
+            assert_eq!(quote(&mut arena, 3, &va), Ok(stuck_a));
+            assert_eq!(conv(&arena, 3, &va, &va), Ok(true));
+            assert_eq!(conv(&arena, 3, &va, &vb), Ok(false));
+            assert_eq!(conv(&arena, 3, &va, &vc), Ok(false));
+            assert_eq!(conv(&arena, 3, &va, &vd), Ok(false));
+        }
     }
 }

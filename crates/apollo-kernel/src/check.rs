@@ -232,6 +232,30 @@ fn infer_papp(
     Ok((res_ty, u_path))
 }
 
+fn infer_coe(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    line: TermId,
+    src: TermId,
+    dst: TermId,
+    term: TermId,
+) -> Result<(Value, UsageVec), TypeError> {
+    let _ = ctx.push_dim();
+    let line_res = check_is_type(arena, ctx, line);
+    ctx.pop();
+    let _ = line_res?;
+    let _ = check(arena, ctx, Multiplicity::Zero, src, &Value::Interval)?;
+    let _ = check(arena, ctx, Multiplicity::Zero, dst, &Value::Interval)?;
+    let src_val = eval(arena, &ctx.env, src)?;
+    let dst_val = eval(arena, &ctx.env, dst)?;
+    let line_closure = Closure::new(ctx.env.clone(), line);
+    let src_ty = line_closure.apply(arena, src_val)?;
+    let dst_ty = line_closure.apply(arena, dst_val)?;
+    let usage = check(arena, ctx, mode, term, &src_ty)?;
+    Ok((dst_ty, usage))
+}
+
 pub fn infer(
     arena: &TermArena,
     ctx: &mut Ctx,
@@ -300,6 +324,12 @@ pub fn infer(
             right,
             dim,
         } => infer_papp(arena, ctx, mode, *path, *left, *right, *dim),
+        Term::Coe {
+            line,
+            src,
+            dst,
+            term,
+        } => infer_coe(arena, ctx, mode, *line, *src, *dst, *term),
         Term::Lam { .. } => Err(TypeError::CannotInferLambda),
         Term::Pair { .. } => Err(TypeError::CannotInferPair),
         Term::PLam(_) => Err(TypeError::CannotInferPathLambda),
@@ -845,5 +875,71 @@ mod tests {
         ] {
             assert_ne!(err.to_string(), "");
         }
+    }
+
+    #[test]
+    fn proves_transport_subst_and_transport_refl_via_coercion() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let u1 = arena.universe(Level::constant(1));
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+        let v4 = arena.var(Index(4));
+        let v5 = arena.var(Index(5));
+
+        let path_ab = arena.path(u0, v1, v0);
+        let transport_inner = arena.pi(Multiplicity::One, v2, v2);
+        let transport_ty = [path_ab, u0, u0]
+            .into_iter()
+            .fold(transport_inner, |cod, dom| {
+                arena.pi(Multiplicity::Zero, dom, cod)
+            });
+
+        let p_at_i = arena.papp(v2, v4, v3, v0);
+        let transport_body = arena.coe(p_at_i, d0, d1, v0);
+        let transport_lam_x = arena.lam(Multiplicity::One, transport_body);
+        let transport_expr = wrap_zero_lams(&mut arena, 3, transport_lam_x);
+        assert_eq!(check_closed(&arena, transport_expr, transport_ty), Ok(()));
+
+        let p_fam = arena.pi(Multiplicity::Zero, v0, u0);
+        let p_xy = arena.path(v4, v1, v0);
+        let src_pred_ty = arena.app(v3, v2);
+        let dst_pred_ty = arena.app(v4, v2);
+        let subst_inner = arena.pi(Multiplicity::One, src_pred_ty, dst_pred_ty);
+        let subst_ty = [p_xy, v2, v1, p_fam, u0]
+            .into_iter()
+            .fold(subst_inner, |cod, dom| {
+                arena.pi(Multiplicity::Zero, dom, cod)
+            });
+
+        let p_at_i_sub = arena.papp(v2, v4, v3, v0);
+        let pred_at_i = arena.app(v5, p_at_i_sub);
+        let subst_body = arena.coe(pred_at_i, d0, d1, v0);
+        let subst_lam_px = arena.lam(Multiplicity::One, subst_body);
+        let subst_expr = wrap_zero_lams(&mut arena, 5, subst_lam_px);
+        assert_eq!(check_closed(&arena, subst_expr, subst_ty), Ok(()));
+
+        let coe_const = arena.coe(v2, d0, d1, v0);
+        let refl_path_ty = arena.path(v2, coe_const, v0);
+        let transport_refl_ty = [v0, u0].into_iter().fold(refl_path_ty, |cod, dom| {
+            arena.pi(Multiplicity::Zero, dom, cod)
+        });
+        let coe_from_i = arena.coe(v3, v0, d1, v1);
+        let refl_plam = arena.plam(coe_from_i);
+        let transport_refl_expr = wrap_zero_lams(&mut arena, 2, refl_plam);
+        assert_eq!(
+            check_closed(&arena, transport_refl_expr, transport_refl_ty),
+            Ok(())
+        );
+
+        let wrong_coe = arena.coe(u0, d0, d1, u1);
+        assert_eq!(
+            infer_closed(&arena, wrong_coe).err(),
+            Some(TypeError::TypeMismatch)
+        );
     }
 }

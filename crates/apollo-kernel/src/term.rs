@@ -90,6 +90,12 @@ pub enum Term {
         right: TermId,
         dim: TermId,
     },
+    Coe {
+        line: TermId,
+        src: TermId,
+        dst: TermId,
+        term: TermId,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -229,6 +235,16 @@ impl TermArena {
     }
 
     #[must_use]
+    pub fn coe(&mut self, line: TermId, src: TermId, dst: TermId, term: TermId) -> TermId {
+        self.intern(Term::Coe {
+            line,
+            src,
+            dst,
+            term,
+        })
+    }
+
+    #[must_use]
     pub fn format_term(&self, id: TermId) -> String {
         let Some(term) = self.get(id) else {
             return format!("<invalid:{}>", id.raw());
@@ -287,6 +303,18 @@ impl TermArena {
             Term::PApp { path, dim, .. } => {
                 format!("({} @ {})", self.format_term(*path), self.format_term(*dim))
             }
+            Term::Coe {
+                line,
+                src,
+                dst,
+                term,
+            } => format!(
+                "coe({}, {} -> {}, {})",
+                self.format_term(*line),
+                self.format_term(*src),
+                self.format_term(*dst),
+                self.format_term(*term)
+            ),
         }
     }
 }
@@ -350,6 +378,7 @@ mod tests {
         let path = arena.path(u0, x, x);
         let plam = arena.plam(x);
         let papp = arena.papp(plam, x, x, d0);
+        let coe = arena.coe(u0, d0, d1, x);
 
         assert_eq!(arena.format_term(u0), "Type 0");
         assert_eq!(arena.format_term(pi), "(1 : Type 0) -> #0");
@@ -366,6 +395,7 @@ mod tests {
         assert_eq!(arena.format_term(path), "Path(Type 0, #0, #0)");
         assert_eq!(arena.format_term(plam), "<i> #0");
         assert_eq!(arena.format_term(papp), "(<i> #0 @ 0)");
+        assert_eq!(arena.format_term(coe), "coe(Type 0, 0 -> 1, #0)");
         assert_eq!(arena.format_term(TermId(999)), "<invalid:999>");
     }
 }

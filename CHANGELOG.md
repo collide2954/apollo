@@ -5,6 +5,14 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-26
+
+### Added
+
+- Add the static Apollo website and GitHub Pages deployment workflow.
+- Add Cartesian cubical interval dimensions, cofibrations, and face entailment to `apollo-kernel`.
+- Add cubical path types, path lambdas, path application, and endpoint boundary checking to `apollo-kernel`.
+
 ## [0.2.1] - 2026-11-26
 
 ### Changed

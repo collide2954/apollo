@@ -49,4 +49,4 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [workspace.dependencies]
-apollo-kernel = { path = "crates/apollo-kernel" }
+apollo-kernel = { version = "0.1.0", path = "crates/apollo-kernel" }

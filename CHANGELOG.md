@@ -5,6 +5,14 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-26
+
+### Added
+
+- Add Cartesian coercion (`coe`) with Kan computation rules for universes, Pi types, and Sigma types.
+- Add Cartesian homogeneous composition (`hcom`) with cofibration terms, cap checks, and pairwise branch overlap checks.
+- Add kernel proofs for `transport`, `subst`, `transport_refl`, path symmetry (`sym`), and path transitivity (`trans`).
+
 ## [0.3.0] - 2026-11-26
 
 ### Added

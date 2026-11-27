@@ -35,6 +35,12 @@ Run the typechecker on the example prelude:
 cargo run -p apollo-cli -- check examples/prelude.ap
 ```
 
+Extract verified `#![no_std]` Rust code from the extractable example:
+
+```bash
+cargo run -p apollo-cli -- build examples/extractable.ap
+```
+
 ## Documentation
 
 All project documentation obeys ASD-STE100.

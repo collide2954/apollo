@@ -23,7 +23,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/collide2954/apollo"
@@ -52,7 +52,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [workspace.dependencies]
-apollo-codegen = { version = "0.5.0", path = "crates/apollo-codegen" }
-apollo-elab = { version = "0.5.0", path = "crates/apollo-elab" }
-apollo-kernel = { version = "0.5.0", path = "crates/apollo-kernel" }
-apollo-syntax = { version = "0.5.0", path = "crates/apollo-syntax" }
+apollo-codegen = { version = "0.6.0", path = "crates/apollo-codegen" }
+apollo-elab = { version = "0.6.0", path = "crates/apollo-elab" }
+apollo-kernel = { version = "0.6.0", path = "crates/apollo-kernel" }
+apollo-syntax = { version = "0.6.0", path = "crates/apollo-syntax" }

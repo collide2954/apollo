@@ -5,6 +5,19 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-27
+
+### Added
+
+- Add proof-erasing `#![no_std]` Rust code generation with automatic `Clone` inference and last-use moves in `apollo-codegen`.
+- Add refinement erasure for erased `Sigma` pairs, `impl FnOnce` and `impl Fn` extraction, and Rust keyword escaping.
+- Add the `apollo build <file.ap> [-o <out.rs>]` command and `examples/extractable.ap` verified by `rustc -D warnings`.
+
+### Changed
+
+- Expose declaration kind and parameter names on `CheckedDecl` in `apollo-elab`.
+- Split GitHub Pages deployment into separate build and deploy jobs.
+
 ## [0.5.0] - 2026-11-26
 
 ### Added

@@ -4,7 +4,8 @@ pub mod parser;
 pub mod span;
 
 pub use ast::{
-    CofExpr, Decl, DeclKind, Expr, ExprKind, HComBranch, MatchArm, Module, MultAst, Param, Pattern,
+    CofExpr, DataDecl, DataKind, Decl, DeclKind, Expr, ExprKind, HComBranch, MatchArm, Module,
+    ModuleItem, MultAst, Param, Pattern, VariantDecl,
 };
 pub use lexer::{LexError, Token, TokenKind, lex};
 pub use parser::{ParseError, parse_expr, parse_module};

@@ -1,19 +1,44 @@
+mod data;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
 use apollo_kernel::nbe::{Closure, Value, eval, quote};
 use apollo_kernel::{
-    CofTerm, Ctx, Index, Level, Multiplicity, TermArena, TermId, TypeError, check_closed, infer,
+    CofTerm, Ctx, Index, InductiveId, Level, Multiplicity, TermArena, TermId, TypeError,
+    check_closed, infer,
 };
 use apollo_syntax::{
-    CofExpr, Decl, DeclKind, Expr, ExprKind, MatchArm, MultAst, ParseError, Pattern, Span,
-    line_col, parse_module,
+    CofExpr, DataKind, Decl, DeclKind, Expr, ExprKind, MatchArm, ModuleItem, MultAst, ParseError,
+    Pattern, Span, line_col, parse_module,
 };
 
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedField {
+    pub name: String,
+    pub mult: Multiplicity,
+    pub is_recursive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedCtor {
+    pub name: String,
+    pub fields: Vec<CheckedField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedData {
+    pub id: InductiveId,
+    pub kind: DataKind,
+    pub name: String,
+    pub param_names: Vec<String>,
+    pub ctors: Vec<CheckedCtor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +53,7 @@ pub struct CheckedDecl {
 #[derive(Debug, Clone)]
 pub struct CheckedModule {
     pub arena: TermArena,
+    pub data_decls: Vec<CheckedData>,
     pub decls: Vec<CheckedDecl>,
 }
 
@@ -49,6 +75,10 @@ pub enum ElabError {
         span: Span,
     },
     InvalidMatch {
+        message: String,
+        span: Span,
+    },
+    InvalidData {
         message: String,
         span: Span,
     },
@@ -75,6 +105,7 @@ impl ElabError {
             | Self::ExpectedPath { span }
             | Self::UnsupportedUnannotatedLet { span }
             | Self::InvalidMatch { span, .. }
+            | Self::InvalidData { span, .. }
             | Self::Type { span, .. } => *span,
         }
     }
@@ -99,6 +130,7 @@ impl fmt::Display for ElabError {
                 f.write_str("let expression requires a known expected type")
             }
             Self::InvalidMatch { message, .. } => write!(f, "invalid match: {message}"),
+            Self::InvalidData { message, .. } => write!(f, "invalid data declaration: {message}"),
             Self::Type { decl, err, .. } => write!(f, "in '{decl}': {err}"),
         }
     }
@@ -109,17 +141,25 @@ impl std::error::Error for ElabError {}
 pub fn check_source(source: &str) -> Result<CheckedModule, ElabError> {
     let module = parse_module(source)?;
     let mut elab = Elaborator::new();
-    let mut checked = Vec::with_capacity(module.decls.len());
-    for decl in &module.decls {
-        checked.push(elab.check_decl(decl)?);
+    let mut checked = Vec::new();
+    for item in &module.items {
+        match item {
+            ModuleItem::Data(data) => {
+                let _ = elab.check_data_decl(data)?;
+            }
+            ModuleItem::Decl(decl) => {
+                checked.push(elab.check_decl(decl)?);
+            }
+        }
     }
     Ok(CheckedModule {
         arena: elab.arena,
+        data_decls: elab.data_decls,
         decls: checked,
     })
 }
 
-const fn to_mult(mult: MultAst) -> Multiplicity {
+pub(crate) const fn to_mult(mult: MultAst) -> Multiplicity {
     match mult {
         MultAst::Zero => Multiplicity::Zero,
         MultAst::One => Multiplicity::One,
@@ -137,13 +177,25 @@ struct LetParts<'a> {
     span: Span,
 }
 
-struct Elaborator {
-    arena: TermArena,
-    ctx: Ctx,
-    env: Vec<Value>,
-    locals: Vec<String>,
-    globals: HashMap<String, (TermId, TermId)>,
-    decl_name: String,
+struct DataMatchSpec<'a> {
+    id: InductiveId,
+    params: &'a [Value],
+    motive_id: TermId,
+    motive_cl: &'a Closure,
+    scrut_id: TermId,
+    arms: &'a [MatchArm],
+    span: Span,
+}
+
+pub(crate) struct Elaborator {
+    pub(crate) arena: TermArena,
+    pub(crate) ctx: Ctx,
+    pub(crate) env: Vec<Value>,
+    pub(crate) locals: Vec<String>,
+    pub(crate) globals: HashMap<String, (TermId, TermId)>,
+    pub(crate) data_map: HashMap<String, CheckedData>,
+    pub(crate) data_decls: Vec<CheckedData>,
+    pub(crate) decl_name: String,
 }
 
 impl Elaborator {
@@ -154,11 +206,13 @@ impl Elaborator {
             env: Vec::new(),
             locals: Vec::new(),
             globals: HashMap::new(),
+            data_map: HashMap::new(),
+            data_decls: Vec::new(),
             decl_name: String::new(),
         }
     }
 
-    fn push_var(&mut self, name: String, ty: Value) -> Value {
+    pub(crate) fn push_var(&mut self, name: String, ty: Value) -> Value {
         let var = self.ctx.push(ty);
         self.env.push(var.clone());
         self.locals.push(name);
@@ -172,14 +226,14 @@ impl Elaborator {
         dim
     }
 
-    fn pop_binding(&mut self) {
+    pub(crate) fn pop_binding(&mut self) {
         self.ctx.pop();
         let _ = self.env.pop();
         let _ = self.locals.pop();
     }
 
     fn check_decl(&mut self, decl: &Decl) -> Result<CheckedDecl, ElabError> {
-        if self.globals.contains_key(&decl.name) {
+        if self.globals.contains_key(&decl.name) || self.data_map.contains_key(&decl.name) {
             return Err(ElabError::DuplicateDecl {
                 name: decl.name.clone(),
                 span: decl.span,
@@ -228,7 +282,11 @@ impl Elaborator {
         })
     }
 
-    fn elab_expr(&mut self, expr: &Expr, expected: Option<&Value>) -> Result<TermId, ElabError> {
+    pub(crate) fn elab_expr(
+        &mut self,
+        expr: &Expr,
+        expected: Option<&Value>,
+    ) -> Result<TermId, ElabError> {
         match &expr.kind {
             ExprKind::Universe(level) => Ok(self.arena.universe(Level::constant(*level))),
             ExprKind::Interval => Ok(self.arena.interval()),
@@ -237,11 +295,7 @@ impl Elaborator {
             ExprKind::Var(name) => self.resolve_var(name, expr.span),
             ExprKind::Pi { params, codomain } => self.elab_pi(params, codomain),
             ExprKind::Lam { params, body } => self.elab_lam(params, body, expected),
-            ExprKind::App { func, arg } => {
-                let func_id = self.elab_expr(func, None)?;
-                let arg_id = self.elab_expr(arg, None)?;
-                Ok(self.arena.app(func_id, arg_id))
-            }
+            ExprKind::App { .. } => self.elab_app(expr),
             ExprKind::Sigma {
                 mult,
                 name,
@@ -306,8 +360,37 @@ impl Elaborator {
                 },
                 expected,
             ),
+            ExprKind::Unit
+            | ExprKind::Tt
+            | ExprKind::Void
+            | ExprKind::Bool
+            | ExprKind::True
+            | ExprKind::False
+            | ExprKind::Nat
+            | ExprKind::Zero
+            | ExprKind::Succ(_) => self.elab_primitive(&expr.kind),
+            ExprKind::Match {
+                scrut,
+                motive,
+                arms,
+            } => self.elab_match(scrut, motive.as_ref(), arms, expected, expr.span),
+            ExprKind::Ctor {
+                type_name,
+                ctor_name,
+                args,
+            } => self.elab_ctor(type_name, ctor_name, args, expected, expr.span),
+            ExprKind::StructLit {
+                type_name,
+                type_args,
+                fields,
+            } => self.elab_struct_lit(type_name, type_args, fields, expected, expr.span),
+            ExprKind::Field { target, name } => self.elab_field(target, name, expr.span),
+        }
+    }
+
+    fn elab_primitive(&mut self, kind: &ExprKind) -> Result<TermId, ElabError> {
+        match kind {
             ExprKind::Unit => Ok(self.arena.unit()),
-            ExprKind::Tt => Ok(self.arena.tt()),
             ExprKind::Void => Ok(self.arena.void()),
             ExprKind::Bool => Ok(self.arena.bool_ty()),
             ExprKind::True => Ok(self.arena.bool_true()),
@@ -318,12 +401,38 @@ impl Elaborator {
                 let pred_id = self.elab_expr(pred, Some(&Value::Nat))?;
                 Ok(self.arena.succ(pred_id))
             }
-            ExprKind::Match {
-                scrut,
-                motive,
-                arms,
-            } => self.elab_match(scrut, motive.as_ref(), arms, expected, expr.span),
+            _ => Ok(self.arena.tt()),
         }
+    }
+
+    fn elab_app(&mut self, expr: &Expr) -> Result<TermId, ElabError> {
+        let mut head = expr;
+        let mut rev_args = Vec::new();
+        while let ExprKind::App { func, arg } = &head.kind {
+            rev_args.push(arg.as_ref());
+            head = func.as_ref();
+        }
+        rev_args.reverse();
+
+        if let ExprKind::Var(name) = &head.kind
+            && !self.locals.iter().any(|l| l == name)
+            && self.data_map.contains_key(name)
+        {
+            return self.elab_data_type_app(name, &rev_args, expr.span);
+        }
+
+        let mut func_id = self.elab_expr(head, None)?;
+        for arg in rev_args {
+            let expected_arg = infer(&self.arena, &mut self.ctx, Multiplicity::Zero, func_id)
+                .ok()
+                .and_then(|(ty, _)| match ty {
+                    Value::Pi { domain, .. } => Some((*domain).clone()),
+                    _ => None,
+                });
+            let arg_id = self.elab_expr(arg, expected_arg.as_ref())?;
+            func_id = self.arena.app(func_id, arg_id);
+        }
+        Ok(func_id)
     }
 
     fn resolve_var(&mut self, name: &str, span: Span) -> Result<TermId, ElabError> {
@@ -333,6 +442,9 @@ impl Elaborator {
         }
         if let Some(&(ty_id, body_id)) = self.globals.get(name) {
             return Ok(self.arena.ann(body_id, ty_id));
+        }
+        if self.data_map.contains_key(name) {
+            return self.elab_data_type_app(name, &[], span);
         }
         Err(ElabError::UnknownName {
             name: name.to_owned(),
@@ -565,7 +677,7 @@ impl Elaborator {
         Ok(self.arena.app(ann_id, val_id))
     }
 
-    fn eval_in_ctx(&self, term_id: TermId, span: Span) -> Result<Value, ElabError> {
+    pub(crate) fn eval_in_ctx(&self, term_id: TermId, span: Span) -> Result<Value, ElabError> {
         eval(&self.arena, &self.env, term_id).map_err(|err| ElabError::Type {
             decl: self.decl_name.clone(),
             err: TypeError::Eval(err),
@@ -617,8 +729,17 @@ impl Elaborator {
             Value::Unit => self.elab_unit_match(motive_id, &motive_cl, scrut_id, arms, span),
             Value::Bool => self.elab_bool_match(motive_id, &motive_cl, scrut_id, arms, span),
             Value::Nat => self.elab_nat_match(motive_id, &motive_cl, scrut_id, arms, span),
+            Value::Data { id, params } => self.elab_data_match(&DataMatchSpec {
+                id,
+                params: &params,
+                motive_id,
+                motive_cl: &motive_cl,
+                scrut_id,
+                arms,
+                span,
+            }),
             _ => Err(ElabError::InvalidMatch {
-                message: "scrutinee must have type Void, Unit, Bool, or Nat".to_owned(),
+                message: "scrutinee must have an inductive type".to_owned(),
                 span: scrut.span,
             }),
         }
@@ -920,8 +1041,7 @@ mod tests {
             Some(ElabError::ExpectedPath { .. })
         ));
 
-        let unannotated_let =
-            "fn f(0 A: Type 0, 1 g: (1 _: A) -> A, 1 x: A) -> A { g({ let 1 y: A = x; y }) }";
+        let unannotated_let = "fn f(0 A: Type 0, 1 x: A) -> A { ({ let 1 y: A = x; y }).0 }";
         assert!(matches!(
             check_source(unannotated_let).err(),
             Some(ElabError::UnsupportedUnannotatedLet { .. })
@@ -1042,7 +1162,7 @@ mod tests {
             "fn f(1 n: Nat) -> Nat { match n { zero => zero, zero => zero, succ(k) => k } }",
             "fn f(1 n: Nat) -> Nat { match n { zero => zero, succ(k) => k, succ(k) => zero } }",
             "fn f(1 n: Nat) -> Nat { match n { zero => zero, true => zero } }",
-            "fn f(1 g: (1 _: Bool) -> Bool, 1 b: Bool) -> Bool { g(match b { true => false, false => true }) }",
+            "fn f(1 b: Bool) -> Bool { (match b { true => false, false => true }).0 }",
         ] {
             assert!(
                 matches!(
@@ -1050,6 +1170,132 @@ mod tests {
                     Some(ElabError::InvalidMatch { .. })
                 ),
                 "expected InvalidMatch for: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn elaborates_enum_struct_recursion_and_rejects_bad_data() {
+        let src = r"
+            enum Color { Red, Green, Blue }
+
+            enum Option(0 A: Type 0) {
+                None,
+                Some(1 val: A),
+            }
+
+            enum List(0 A: Type 0) {
+                Nil,
+                Cons(1 head: A, 1 tail: List(A)),
+            }
+
+            struct Point(0 A: Type 0) {
+                1 x: A,
+                1 y: A,
+            }
+
+            struct PairPoint(0 A: Type 0) {
+                ω x: A,
+                ω y: A,
+            }
+
+            fn unwrap_or(0 A: Type 0, 1 o: Option(A), ω d: A) -> A {
+                match o {
+                    Option::None => d,
+                    Option::Some(v) => v,
+                }
+            }
+
+            fn map_opt(0 A: Type 0, 0 B: Type 0, 1 o: Option(A), ω f: (1 _: A) -> B) -> Option(B) {
+                match o {
+                    Option::None => Option::None,
+                    Option::Some(v) => Option::Some(f(v)),
+                }
+            }
+
+            fn swap_pt(0 A: Type 0, 1 p: Point(A)) -> Point(A) {
+                match p {
+                    Point { x, y } => Point { x: y, y: x },
+                }
+            }
+
+            fn get_x(0 A: Type 0, ω p: PairPoint(A)) -> A {
+                p.x
+            }
+
+            fn mk_nat_pt() -> Point(Nat) {
+                Point(Nat) { x: zero, y: succ(zero) }
+            }
+
+            fn append(0 A: Type 0, 1 xs: List(A), ω ys: List(A)) -> List(A) {
+                match xs {
+                    List::Nil => ys,
+                    List::Cons(h, _, ih) => List::Cons(h, ih),
+                }
+            }
+
+            theorem append_nil_right(
+                0 A: Type 0,
+                0 xs: List(A),
+            ) -> Path(_ => List(A), append(A, xs, List::Nil), xs) {
+                match xs as |l| Path(_ => List(A), append(A, l, List::Nil), l) {
+                    List::Nil => <i> List::Nil,
+                    List::Cons(h, t, ih) => <i> List::Cons(h, ih @ i),
+                }
+            }
+        ";
+
+        let checked = check_source(src);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+        if let Ok(module) = checked {
+            assert_eq!(module.data_decls.len(), 5);
+            assert_eq!(module.decls.len(), 7);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_data_declarations_literals_and_patterns() {
+        let bad_pos = check_source("enum Bad { Mk(1 f: (1 _: Bad) -> Void) }").err();
+        assert!(matches!(bad_pos, Some(ElabError::Type { .. })));
+
+        for bad_data in [
+            "enum D { A, A }",
+            "enum E(0 A: Type 0) { Mk } fn f(0 A: Type 0) -> E(A, A) { E::Mk }",
+            "enum E { A } fn f() -> E { E::B }",
+            "enum E(0 A: Type 0) { Mk(1 _: A) } fn f(0 A: Type 0) -> E(A) { E::Mk }",
+            "struct S { 1 x: Nat } fn f() -> S { S { x: zero, x: zero } }",
+            "struct S { 1 x: Nat, 1 y: Nat } fn f() -> S { S { x: zero } }",
+            "struct S { 1 x: Nat } fn f() -> S { S { y: zero } }",
+            "enum E { A } fn f() -> E { E {} }",
+            "fn f(1 n: Nat) -> Nat { n.x }",
+            "enum E { A } fn f(1 e: E) -> E { e.x }",
+            "struct S { ω x: Nat } fn f(1 s: S) -> Nat { s.y }",
+        ] {
+            let err = check_source(bad_data).err();
+            assert!(
+                matches!(err, Some(ElabError::InvalidData { .. })),
+                "expected InvalidData for: {bad_data}, got: {err:?}"
+            );
+            if let Some(e) = err {
+                assert_ne!(e.to_string(), "");
+            }
+        }
+
+        for bad_match in [
+            "enum E { A, B } fn f(1 e: E) -> Nat { match e { E::A => zero } }",
+            "enum E { A, B } fn f(1 e: E) -> Nat { match e { E::A => zero, E::A => zero, E::B => zero } }",
+            "enum E { A } fn f(1 e: E) -> Nat { match e { E::B => zero } }",
+            "enum E { A(1 _: Nat) } fn f(1 e: E) -> Nat { match e { E::A => zero } }",
+            "struct S { 1 x: Nat } fn f(1 s: S) -> Nat { match s { S { y } => y } }",
+            "struct S { 1 x: Nat } fn f(1 s: S) -> Nat { match s { S { x, x } => x } }",
+            "struct S { 1 x: Nat, 1 y: Nat } fn f(1 s: S) -> Nat { match s { S { x } => x } }",
+        ] {
+            assert!(
+                matches!(
+                    check_source(bad_match).err(),
+                    Some(ElabError::InvalidMatch { .. })
+                ),
+                "expected InvalidMatch for: {bad_match}"
             );
         }
     }

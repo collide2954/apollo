@@ -1,7 +1,8 @@
 use std::fmt;
 
 use crate::ast::{
-    CofExpr, Decl, DeclKind, Expr, ExprKind, HComBranch, MatchArm, Module, MultAst, Param, Pattern,
+    CofExpr, DataDecl, DataKind, Decl, DeclKind, Expr, ExprKind, HComBranch, MatchArm, Module,
+    ModuleItem, MultAst, Param, Pattern, VariantDecl,
 };
 use crate::lexer::{LexError, Token, TokenKind, lex};
 use crate::span::Span;
@@ -70,6 +71,7 @@ pub fn parse_expr(source: &str) -> Result<Expr, ParseError> {
 struct Parser<'a> {
     tokens: &'a [Token],
     eof: Token,
+    allow_struct_lit: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -78,7 +80,19 @@ impl<'a> Parser<'a> {
             kind: TokenKind::Eof,
             span: Span::new(0, 0),
         });
-        Self { tokens, eof }
+        Self {
+            tokens,
+            eof,
+            allow_struct_lit: true,
+        }
+    }
+
+    fn parse_expr_no_struct(&mut self) -> Result<Expr, ParseError> {
+        let prev = self.allow_struct_lit;
+        self.allow_struct_lit = false;
+        let res = self.parse_expr();
+        self.allow_struct_lit = prev;
+        res
     }
 
     fn peek(&self) -> &Token {
@@ -136,11 +150,111 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_module(&mut self) -> Result<Module, ParseError> {
-        let mut decls = Vec::new();
+        let mut items = Vec::new();
         while !self.check(&TokenKind::Eof) {
-            decls.push(self.parse_decl()?);
+            items.push(self.parse_item()?);
         }
-        Ok(Module { decls })
+        Ok(Module { items })
+    }
+
+    fn parse_item(&mut self) -> Result<ModuleItem, ParseError> {
+        match self.peek().kind {
+            TokenKind::Fn | TokenKind::Theorem => Ok(ModuleItem::Decl(self.parse_decl()?)),
+            TokenKind::Enum => Ok(ModuleItem::Data(self.parse_enum()?)),
+            TokenKind::Struct => Ok(ModuleItem::Data(self.parse_struct()?)),
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "'fn', 'theorem', 'enum', or 'struct'".to_owned(),
+                span: self.peek().span,
+            }),
+        }
+    }
+
+    fn parse_opt_data_params(&mut self) -> Result<Vec<Param>, ParseError> {
+        if self.check(&TokenKind::LParen) {
+            let _ = self.advance();
+            let params = self.parse_param_list()?;
+            let _ = self.expect(&TokenKind::RParen, "')'")?;
+            Ok(params)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn parse_opt_universe_ann(&mut self) -> Result<Option<u32>, ParseError> {
+        if self.check(&TokenKind::Colon) {
+            let _ = self.advance();
+            let _ = self.expect(&TokenKind::TypeKw, "'Type'")?;
+            let (lvl, _) = self.expect_int("universe level")?;
+            Ok(Some(lvl))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_enum(&mut self) -> Result<DataDecl, ParseError> {
+        let start = self.expect(&TokenKind::Enum, "'enum'")?;
+        let (name, _) = self.expect_ident("enum name")?;
+        let params = self.parse_opt_data_params()?;
+        let level = self.parse_opt_universe_ann()?;
+        let _ = self.expect(&TokenKind::LBrace, "'{'")?;
+        let mut variants = Vec::new();
+        while !self.check(&TokenKind::RBrace) {
+            let (vname, vstart) = self.expect_ident("variant name")?;
+            let (fields, vend) = if self.check(&TokenKind::LParen) {
+                let _ = self.advance();
+                let fs = self.parse_param_list()?;
+                let end = self.expect(&TokenKind::RParen, "')'")?;
+                (fs, end)
+            } else {
+                (Vec::new(), vstart)
+            };
+            variants.push(VariantDecl {
+                name: vname,
+                fields,
+                span: vstart.merge(vend),
+            });
+            if self.check(&TokenKind::Comma) {
+                let _ = self.advance();
+            } else {
+                break;
+            }
+        }
+        let end = self.expect(&TokenKind::RBrace, "'}'")?;
+        Ok(DataDecl {
+            kind: DataKind::Enum,
+            name,
+            params,
+            level,
+            variants,
+            span: start.merge(end),
+        })
+    }
+
+    fn parse_struct(&mut self) -> Result<DataDecl, ParseError> {
+        let start = self.expect(&TokenKind::Struct, "'struct'")?;
+        let (name, _) = self.expect_ident("struct name")?;
+        let params = self.parse_opt_data_params()?;
+        let level = self.parse_opt_universe_ann()?;
+        let _ = self.expect(&TokenKind::LBrace, "'{'")?;
+        let mut fields = Vec::new();
+        while !self.check(&TokenKind::RBrace) {
+            fields.push(self.parse_param()?);
+            if self.check(&TokenKind::Comma) {
+                let _ = self.advance();
+            } else {
+                break;
+            }
+        }
+        let end = self.expect(&TokenKind::RBrace, "'}'")?;
+        let span = start.merge(end);
+        Ok(DataDecl {
+            kind: DataKind::Struct,
+            name: name.clone(),
+            params,
+            level,
+            variants: vec![VariantDecl { name, fields, span }],
+            span,
+        })
     }
 
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
@@ -166,7 +280,7 @@ impl<'a> Parser<'a> {
         let params = self.parse_param_list()?;
         let _ = self.expect(&TokenKind::RParen, "')'")?;
         let _ = self.expect(&TokenKind::Arrow, "'->'")?;
-        let ret_ty = self.parse_expr()?;
+        let ret_ty = self.parse_expr_no_struct()?;
         let body = self.parse_block()?;
         let span = start.merge(body.span);
         Ok(Decl {
@@ -227,7 +341,11 @@ impl<'a> Parser<'a> {
 
     fn parse_block(&mut self) -> Result<Expr, ParseError> {
         let start = self.expect(&TokenKind::LBrace, "'{'")?;
-        let expr = self.parse_block_body()?;
+        let prev = self.allow_struct_lit;
+        self.allow_struct_lit = true;
+        let expr_res = self.parse_block_body();
+        self.allow_struct_lit = prev;
+        let expr = expr_res?;
         let end = self.expect(&TokenKind::RBrace, "'}'")?;
         Ok(Expr {
             kind: expr.kind,
@@ -355,7 +473,11 @@ impl<'a> Parser<'a> {
             if self.check(&TokenKind::LParen) {
                 let _ = self.advance();
                 while !self.check(&TokenKind::RParen) {
-                    let arg = self.parse_expr()?;
+                    let prev = self.allow_struct_lit;
+                    self.allow_struct_lit = true;
+                    let arg_res = self.parse_expr();
+                    self.allow_struct_lit = prev;
+                    let arg = arg_res?;
                     let span = expr.span.merge(arg.span);
                     expr = Expr {
                         kind: ExprKind::App {
@@ -372,6 +494,20 @@ impl<'a> Parser<'a> {
                 }
                 let end = self.expect(&TokenKind::RParen, "')'")?;
                 expr.span = expr.span.merge(end);
+                if self.allow_struct_lit
+                    && self.check(&TokenKind::LBrace)
+                    && let Some((type_name, type_args)) = split_var_app(&expr)
+                {
+                    let (fields, end_brace) = self.parse_struct_lit_fields()?;
+                    expr = Expr {
+                        kind: ExprKind::StructLit {
+                            type_name,
+                            type_args,
+                            fields,
+                        },
+                        span: expr.span.merge(end_brace),
+                    };
+                }
             } else if self.check(&TokenKind::At) {
                 let _ = self.advance();
                 let dim = self.parse_atom()?;
@@ -385,26 +521,121 @@ impl<'a> Parser<'a> {
                 };
             } else if self.check(&TokenKind::Dot) {
                 let _ = self.advance();
-                let (proj, span) = self.expect_int("0 or 1")?;
-                let full_span = expr.span.merge(span);
-                expr = match proj {
-                    0 => Expr {
-                        kind: ExprKind::Fst(Box::new(expr)),
-                        span: full_span,
-                    },
-                    1 => Expr {
-                        kind: ExprKind::Snd(Box::new(expr)),
-                        span: full_span,
-                    },
-                    other => {
-                        return Err(ParseError::InvalidProjection { value: other, span });
-                    }
-                };
+                expr = self.parse_dot_projection(expr)?;
             } else {
                 break;
             }
         }
         Ok(expr)
+    }
+
+    fn parse_dot_projection(&mut self, expr: Expr) -> Result<Expr, ParseError> {
+        let token = self.peek().clone();
+        match token.kind {
+            TokenKind::Int(0) => {
+                let _ = self.advance();
+                Ok(Expr {
+                    span: expr.span.merge(token.span),
+                    kind: ExprKind::Fst(Box::new(expr)),
+                })
+            }
+            TokenKind::Int(1) => {
+                let _ = self.advance();
+                Ok(Expr {
+                    span: expr.span.merge(token.span),
+                    kind: ExprKind::Snd(Box::new(expr)),
+                })
+            }
+            TokenKind::Int(other) => Err(ParseError::InvalidProjection {
+                value: other,
+                span: token.span,
+            }),
+            TokenKind::Ident(name) => {
+                let _ = self.advance();
+                Ok(Expr {
+                    span: expr.span.merge(token.span),
+                    kind: ExprKind::Field {
+                        target: Box::new(expr),
+                        name,
+                    },
+                })
+            }
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "0, 1, or field name".to_owned(),
+                span: token.span,
+            }),
+        }
+    }
+
+    fn parse_struct_lit_fields(&mut self) -> Result<(Vec<(String, Expr)>, Span), ParseError> {
+        let _ = self.expect(&TokenKind::LBrace, "'{'")?;
+        let mut fields = Vec::new();
+        while !self.check(&TokenKind::RBrace) {
+            let (fname, _) = self.expect_ident("field name")?;
+            let _ = self.expect(&TokenKind::Colon, "':'")?;
+            let prev = self.allow_struct_lit;
+            self.allow_struct_lit = true;
+            let val_res = self.parse_expr();
+            self.allow_struct_lit = prev;
+            fields.push((fname, val_res?));
+            if self.check(&TokenKind::Comma) {
+                let _ = self.advance();
+            } else {
+                break;
+            }
+        }
+        let end = self.expect(&TokenKind::RBrace, "'}'")?;
+        Ok((fields, end))
+    }
+
+    fn parse_ident_atom(&mut self, name: String, start: Span) -> Result<Expr, ParseError> {
+        let _ = self.advance();
+        if self.check(&TokenKind::ColonColon) {
+            let _ = self.advance();
+            let (ctor_name, ctor_span) = self.expect_ident("constructor name")?;
+            let mut args = Vec::new();
+            let end = if self.check(&TokenKind::LParen) {
+                let _ = self.advance();
+                while !self.check(&TokenKind::RParen) {
+                    let prev = self.allow_struct_lit;
+                    self.allow_struct_lit = true;
+                    let arg_res = self.parse_expr();
+                    self.allow_struct_lit = prev;
+                    args.push(arg_res?);
+                    if self.check(&TokenKind::Comma) {
+                        let _ = self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RParen, "')'")?
+            } else {
+                ctor_span
+            };
+            Ok(Expr {
+                kind: ExprKind::Ctor {
+                    type_name: name,
+                    ctor_name,
+                    args,
+                },
+                span: start.merge(end),
+            })
+        } else if self.allow_struct_lit && self.check(&TokenKind::LBrace) {
+            let (fields, end) = self.parse_struct_lit_fields()?;
+            Ok(Expr {
+                kind: ExprKind::StructLit {
+                    type_name: name,
+                    type_args: Vec::new(),
+                    fields,
+                },
+                span: start.merge(end),
+            })
+        } else {
+            Ok(Expr {
+                kind: ExprKind::Var(name),
+                span: start,
+            })
+        }
     }
 
     const fn single_token_expr(&mut self, kind: ExprKind, span: Span) -> Expr {
@@ -430,7 +661,7 @@ impl<'a> Parser<'a> {
                 value,
                 span: token.span,
             }),
-            TokenKind::Ident(name) => Ok(self.single_token_expr(ExprKind::Var(name), token.span)),
+            TokenKind::Ident(name) => self.parse_ident_atom(name, token.span),
             TokenKind::Sigma => self.parse_sigma(),
             TokenKind::Path => self.parse_path(),
             TokenKind::Coe => self.parse_coe(),
@@ -647,13 +878,13 @@ impl<'a> Parser<'a> {
 
     fn parse_match(&mut self) -> Result<Expr, ParseError> {
         let start = self.expect(&TokenKind::Match, "'match'")?;
-        let scrut = self.parse_expr()?;
+        let scrut = self.parse_expr_no_struct()?;
         let motive = if self.check(&TokenKind::As) {
             let _ = self.advance();
             let _ = self.expect(&TokenKind::Pipe, "'|'")?;
             let (name, _) = self.expect_ident("motive binder")?;
             let _ = self.expect(&TokenKind::Pipe, "'|'")?;
-            let motive_ty = self.parse_expr()?;
+            let motive_ty = self.parse_expr_no_struct()?;
             Some((name, Box::new(motive_ty)))
         } else {
             None
@@ -726,10 +957,76 @@ impl<'a> Parser<'a> {
                     span: start.merge(end),
                 })
             }
+            TokenKind::Ident(type_name) => self.parse_data_pattern(type_name, token.span),
             _ => Err(ParseError::UnexpectedToken {
-                expected: "pattern ('()', 'true', 'false', 'zero', or 'succ')".to_owned(),
+                expected: "pattern ('()', 'true', 'false', 'zero', 'succ', or data pattern)"
+                    .to_owned(),
                 span: token.span,
             }),
+        }
+    }
+
+    fn parse_data_pattern(
+        &mut self,
+        type_name: String,
+        start: Span,
+    ) -> Result<Pattern, ParseError> {
+        let _ = self.advance();
+        if self.check(&TokenKind::ColonColon) {
+            let _ = self.advance();
+            let (ctor_name, ctor_span) = self.expect_ident("constructor name")?;
+            let mut binders = Vec::new();
+            let end = if self.check(&TokenKind::LParen) {
+                let _ = self.advance();
+                while !self.check(&TokenKind::RParen) {
+                    let (b, _) = self.expect_ident("pattern binder")?;
+                    binders.push(b);
+                    if self.check(&TokenKind::Comma) {
+                        let _ = self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RParen, "')'")?
+            } else {
+                ctor_span
+            };
+            Ok(Pattern::Ctor {
+                type_name,
+                ctor_name,
+                binders,
+                span: start.merge(end),
+            })
+        } else if self.check(&TokenKind::LBrace) {
+            let _ = self.advance();
+            let mut fields = Vec::new();
+            while !self.check(&TokenKind::RBrace) {
+                let (fname, _) = self.expect_ident("field name")?;
+                let binder = if self.check(&TokenKind::Colon) {
+                    let _ = self.advance();
+                    let (b, _) = self.expect_ident("field binder")?;
+                    b
+                } else {
+                    fname.clone()
+                };
+                fields.push((fname, binder));
+                if self.check(&TokenKind::Comma) {
+                    let _ = self.advance();
+                } else {
+                    break;
+                }
+            }
+            let end = self.expect(&TokenKind::RBrace, "'}'")?;
+            Ok(Pattern::Struct {
+                type_name,
+                fields,
+                span: start.merge(end),
+            })
+        } else {
+            Err(ParseError::UnexpectedToken {
+                expected: "'::' or '{' in pattern".to_owned(),
+                span: self.peek().span,
+            })
         }
     }
 
@@ -742,6 +1039,14 @@ impl<'a> Parser<'a> {
                 span: start.merge(end),
             });
         }
+        let prev = self.allow_struct_lit;
+        self.allow_struct_lit = true;
+        let res = self.parse_paren_inner(start);
+        self.allow_struct_lit = prev;
+        res
+    }
+
+    fn parse_paren_inner(&mut self, start: Span) -> Result<Expr, ParseError> {
         let first = self.parse_expr()?;
         if self.check(&TokenKind::Comma) {
             let _ = self.advance();
@@ -775,13 +1080,30 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn split_var_app(expr: &Expr) -> Option<(String, Vec<Expr>)> {
+    let mut cur = expr;
+    let mut rev_args = Vec::new();
+    while let ExprKind::App { func, arg } = &cur.kind {
+        rev_args.push((**arg).clone());
+        cur = func;
+    }
+    if let ExprKind::Var(name) = &cur.kind {
+        rev_args.reverse();
+        Some((name.clone(), rev_args))
+    } else {
+        None
+    }
+}
+
 const fn pattern_span(pat: &Pattern) -> Span {
     match pat {
         Pattern::Unit(span)
         | Pattern::True(span)
         | Pattern::False(span)
         | Pattern::Zero(span)
-        | Pattern::Succ { span, .. } => *span,
+        | Pattern::Succ { span, .. }
+        | Pattern::Ctor { span, .. }
+        | Pattern::Struct { span, .. } => *span,
     }
 }
 
@@ -798,7 +1120,7 @@ const fn cof_span(cof: &CofExpr) -> Span {
 #[cfg(test)]
 mod tests {
     use super::{ParseError, parse_expr, parse_module};
-    use crate::ast::{DeclKind, ExprKind, MultAst};
+    use crate::ast::{DataKind, DeclKind, ExprKind, ModuleItem, MultAst};
 
     #[test]
     fn parses_full_apollo_module_with_cubical_theorems() {
@@ -847,14 +1169,22 @@ mod tests {
         let module = parse_module(src);
         assert!(module.is_ok());
         if let Ok(m) = module {
-            assert_eq!(m.decls.len(), 6);
-            assert_eq!(m.decls[0].kind, DeclKind::Fn);
-            assert_eq!(m.decls[0].name, "id");
-            assert_eq!(m.decls[0].params[0].mult, MultAst::Zero);
-            assert_eq!(m.decls[0].params[1].mult, MultAst::One);
-            assert_eq!(m.decls[1].params[1].mult, MultAst::Many);
-            assert_eq!(m.decls[2].kind, DeclKind::Theorem);
-            assert_eq!(m.decls[5].name, "sym");
+            assert_eq!(m.items.len(), 6);
+            if let ModuleItem::Decl(d) = &m.items[0] {
+                assert_eq!(d.kind, DeclKind::Fn);
+                assert_eq!(d.name, "id");
+                assert_eq!(d.params[0].mult, MultAst::Zero);
+                assert_eq!(d.params[1].mult, MultAst::One);
+            }
+            if let ModuleItem::Decl(d) = &m.items[1] {
+                assert_eq!(d.params[1].mult, MultAst::Many);
+            }
+            if let ModuleItem::Decl(d) = &m.items[2] {
+                assert_eq!(d.kind, DeclKind::Theorem);
+            }
+            if let ModuleItem::Decl(d) = &m.items[5] {
+                assert_eq!(d.name, "sym");
+            }
         }
     }
 
@@ -877,8 +1207,10 @@ mod tests {
 
         let default_mult = parse_module("fn f(x: Type 0) -> Type 0 { x }");
         assert!(default_mult.is_ok());
-        if let Ok(m) = default_mult {
-            assert_eq!(m.decls[0].params[0].mult, MultAst::Many);
+        if let Ok(m) = default_mult
+            && let ModuleItem::Decl(d) = &m.items[0]
+        {
+            assert_eq!(d.params[0].mult, MultAst::Many);
         }
 
         let nested_pi = parse_expr("(0 x: (A)) -> B");
@@ -911,9 +1243,70 @@ mod tests {
         );
         assert!(ind_mod.is_ok(), "parse err: {:?}", ind_mod.err());
         if let Ok(m) = ind_mod {
-            assert_eq!(m.decls.len(), 6);
+            assert_eq!(m.items.len(), 6);
         }
         assert!(parse_expr("match x { bad => x }").is_err());
+    }
+
+    #[test]
+    fn parses_enum_struct_constructors_literals_and_patterns() {
+        let src = r"
+            enum Color { Red, Green, Blue }
+            enum Option(0 A: Type 0) : Type 0 {
+                None,
+                Some(1 val: A),
+            }
+            enum List(0 A: Type 0) {
+                Nil,
+                Cons(1 head: A, 1 tail: List(A)),
+            }
+            struct Point(0 A: Type 0) {
+                1 x: A,
+                1 y: A,
+            }
+            fn mk(0 A: Type 0, 1 a: A, 1 b: A) -> Point(A) {
+                Point { x: a, y: b }
+            }
+            fn mk_nat() -> Point(Nat) {
+                Point(Nat) { x: zero, y: succ(zero) }
+            }
+            fn get_x(0 A: Type 0, ω p: Point(A)) -> A {
+                p.x
+            }
+            fn swap_pt(0 A: Type 0, 1 p: Point(A)) -> Point(A) {
+                match p {
+                    Point { x, y: second } => Point { x: second, y: x },
+                }
+            }
+            fn unwrap_or(0 A: Type 0, 1 o: Option(A), ω d: A) -> A {
+                match o {
+                    Option::None => d,
+                    Option::Some(v) => v,
+                }
+            }
+        ";
+        let parsed = parse_module(src);
+        assert!(parsed.is_ok(), "parse err: {:?}", parsed.err());
+        if let Ok(m) = parsed {
+            assert_eq!(m.items.len(), 9);
+            assert!(matches!(
+                &m.items[0],
+                ModuleItem::Data(d) if d.kind == DataKind::Enum && d.variants.len() == 3
+            ));
+            assert!(matches!(
+                &m.items[1],
+                ModuleItem::Data(d) if d.level == Some(0) && d.variants.len() == 2
+            ));
+            assert!(matches!(
+                &m.items[3],
+                ModuleItem::Data(d) if d.kind == DataKind::Struct && d.variants[0].fields.len() == 2
+            ));
+        }
+        assert!(parse_expr("x.foo").is_ok());
+        assert!(parse_expr("x.(").is_err());
+        assert!(parse_expr("Option::Some(zero)").is_ok());
+        assert!(parse_expr("Option::None").is_ok());
+        assert!(parse_expr("match (Point { x: zero, y: zero }) { Point { x, y } => x }").is_ok());
     }
 
     #[test]

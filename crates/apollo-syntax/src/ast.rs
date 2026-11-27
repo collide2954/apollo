@@ -9,7 +9,36 @@ pub enum MultAst {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
-    pub decls: Vec<Decl>,
+    pub items: Vec<ModuleItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleItem {
+    Data(DataDecl),
+    Decl(Decl),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DataKind {
+    Enum,
+    Struct,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantDecl {
+    pub name: String,
+    pub fields: Vec<Param>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataDecl {
+    pub kind: DataKind,
+    pub name: String,
+    pub params: Vec<Param>,
+    pub level: Option<u32>,
+    pub variants: Vec<VariantDecl>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,6 +109,17 @@ pub enum Pattern {
     Succ {
         pred: String,
         ih: Option<String>,
+        span: Span,
+    },
+    Ctor {
+        type_name: String,
+        ctor_name: String,
+        binders: Vec<String>,
+        span: Span,
+    },
+    Struct {
+        type_name: String,
+        fields: Vec<(String, String)>,
         span: Span,
     },
 }
@@ -174,5 +214,19 @@ pub enum ExprKind {
         scrut: Box<Expr>,
         motive: Option<(String, Box<Expr>)>,
         arms: Vec<MatchArm>,
+    },
+    Ctor {
+        type_name: String,
+        ctor_name: String,
+        args: Vec<Expr>,
+    },
+    StructLit {
+        type_name: String,
+        type_args: Vec<Expr>,
+        fields: Vec<(String, Expr)>,
+    },
+    Field {
+        target: Box<Expr>,
+        name: String,
     },
 }

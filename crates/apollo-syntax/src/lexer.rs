@@ -6,6 +6,8 @@ use crate::span::Span;
 pub enum TokenKind {
     Fn,
     Theorem,
+    Enum,
+    Struct,
     Let,
     TypeKw,
     Sigma,
@@ -38,6 +40,7 @@ pub enum TokenKind {
     RAngle,
     Comma,
     Colon,
+    ColonColon,
     Semicolon,
     Dot,
     At,
@@ -160,6 +163,10 @@ impl<'a> Lexer<'a> {
             '<' => TokenKind::LAngle,
             '>' => TokenKind::RAngle,
             ',' => TokenKind::Comma,
+            ':' if self.peek() == Some(':') => {
+                let _ = self.advance();
+                TokenKind::ColonColon
+            }
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,
             '.' => TokenKind::Dot,
@@ -223,6 +230,8 @@ impl<'a> Lexer<'a> {
         match &self.source[start..end] {
             "fn" => TokenKind::Fn,
             "theorem" => TokenKind::Theorem,
+            "enum" => TokenKind::Enum,
+            "struct" => TokenKind::Struct,
             "let" => TokenKind::Let,
             "Type" => TokenKind::TypeKw,
             "Sigma" => TokenKind::Sigma,

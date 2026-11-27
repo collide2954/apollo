@@ -1088,7 +1088,7 @@ pub fn const_fn<A, B>(a: A) -> impl FnOnce(B) -> A {
                 hcom(A, 0, 1, [top => <j> x], x)
             }
 
-            fn struct(0 A: Type 0, 1 type: A) -> A {
+            fn impl(0 A: Type 0, 1 type: A) -> A {
                 type
             }
 
@@ -1132,7 +1132,7 @@ pub fn hcom_top<A>(x: A) -> A {
     x
 }
 
-pub fn r#struct<A>(r#type: A) -> A {
+pub fn r#impl<A>(r#type: A) -> A {
     r#type
 }
 ";

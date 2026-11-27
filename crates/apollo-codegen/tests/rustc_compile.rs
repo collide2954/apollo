@@ -67,7 +67,7 @@ fn extracted_rust_compiles_cleanly_with_rustc_deny_warnings() {
             hcom(A, 0, 1, [top => <j> x], x)
         }
 
-        fn struct(0 A: Type 0, 1 type: A) -> A {
+        fn impl(0 A: Type 0, 1 type: A) -> A {
             type
         }
 

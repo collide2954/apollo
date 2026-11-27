@@ -67,24 +67,29 @@ pub fn parse_expr(source: &str) -> Result<Expr, ParseError> {
 
 struct Parser<'a> {
     tokens: &'a [Token],
-    pos: usize,
+    eof: Token,
 }
 
 impl<'a> Parser<'a> {
-    const fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, pos: 0 }
+    fn new(tokens: &'a [Token]) -> Self {
+        let eof = tokens.last().cloned().unwrap_or(Token {
+            kind: TokenKind::Eof,
+            span: Span::new(0, 0),
+        });
+        Self { tokens, eof }
     }
 
     fn peek(&self) -> &Token {
-        &self.tokens[self.pos.min(self.tokens.len() - 1)]
+        self.tokens.first().unwrap_or(&self.eof)
     }
 
-    fn advance(&mut self) -> &Token {
-        let idx = self.pos.min(self.tokens.len() - 1);
-        if self.pos + 1 < self.tokens.len() {
-            self.pos += 1;
+    const fn advance(&mut self) -> &Token {
+        if let Some((first, rest)) = self.tokens.split_first() {
+            self.tokens = rest;
+            first
+        } else {
+            &self.eof
         }
-        &self.tokens[idx]
     }
 
     fn check(&self, kind: &TokenKind) -> bool {
@@ -259,7 +264,7 @@ impl<'a> Parser<'a> {
             return false;
         }
         let mut depth = 0_usize;
-        for (offset, token) in self.tokens[self.pos..].iter().enumerate() {
+        for (offset, token) in self.tokens.iter().enumerate() {
             match token.kind {
                 TokenKind::LParen => depth += 1,
                 TokenKind::RParen => {
@@ -267,11 +272,10 @@ impl<'a> Parser<'a> {
                     if depth == 0 {
                         return self
                             .tokens
-                            .get(self.pos + offset + 1)
+                            .get(offset + 1)
                             .is_some_and(|next| next.kind == TokenKind::Arrow);
                     }
                 }
-                TokenKind::Eof => return false,
                 _ => {}
             }
         }
@@ -768,6 +772,14 @@ mod tests {
         if let Ok(m) = default_mult {
             assert_eq!(m.decls[0].params[0].mult, MultAst::Many);
         }
+
+        let nested_pi = parse_expr("(0 f: (1 _: A) -> B) -> B");
+        assert!(matches!(nested_pi.map(|e| e.kind), Ok(ExprKind::Pi { .. })));
+        let grouped_call = parse_expr("((f))(x)");
+        assert!(matches!(
+            grouped_call.map(|e| e.kind),
+            Ok(ExprKind::App { .. })
+        ));
     }
 
     #[test]

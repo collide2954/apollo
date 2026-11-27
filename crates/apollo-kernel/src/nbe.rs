@@ -1552,4 +1552,34 @@ mod tests {
             assert_eq!(conv(&arena, 3, &vb, &vg), Ok(false));
         }
     }
+
+    #[test]
+    fn distinguishes_nested_coe_line_depths() {
+        let mut arena = TermArena::new();
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+        let env2 = vec![Value::var(DeBruijnLevel(0)), Value::dim_var(1)];
+        let fam_inner = arena.papp(v3, d0, d0, v0);
+        let fam_mid = arena.papp(v3, d0, d0, v1);
+        let fam_outer = arena.papp(v3, d0, d0, v2);
+        let line_inner = arena.path(fam_inner, d0, d0);
+        let line_mid = arena.path(fam_mid, d0, d0);
+        let line_outer = arena.path(fam_outer, d0, d0);
+        let coe_inner = arena.coe(line_inner, d0, d1, v1);
+        let coe_mid = arena.coe(line_mid, d0, d1, v1);
+        let coe_outer = arena.coe(line_outer, d0, d1, v1);
+        if let (Ok(val_inner), Ok(val_mid), Ok(val_outer)) = (
+            eval(&arena, &env2, coe_inner),
+            eval(&arena, &env2, coe_mid),
+            eval(&arena, &env2, coe_outer),
+        ) {
+            assert_eq!(conv(&arena, 2, &val_inner, &val_inner), Ok(true));
+            assert_eq!(conv(&arena, 2, &val_inner, &val_mid), Ok(false));
+            assert_eq!(conv(&arena, 2, &val_inner, &val_outer), Ok(false));
+        }
+    }
 }

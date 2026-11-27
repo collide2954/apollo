@@ -81,61 +81,49 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
 
 struct Lexer<'a> {
     source: &'a str,
-    pos: usize,
+    rest: &'a str,
 }
 
 impl<'a> Lexer<'a> {
     const fn new(source: &'a str) -> Self {
-        Self { source, pos: 0 }
+        Self {
+            source,
+            rest: source,
+        }
+    }
+
+    const fn pos(&self) -> usize {
+        self.source.len() - self.rest.len()
     }
 
     fn peek(&self) -> Option<char> {
-        self.source[self.pos..].chars().next()
-    }
-
-    fn peek_next(&self) -> Option<char> {
-        let mut chars = self.source[self.pos..].chars();
-        let _ = chars.next()?;
-        chars.next()
+        self.rest.chars().next()
     }
 
     fn advance(&mut self) -> Option<char> {
-        let ch = self.peek()?;
-        self.pos += ch.len_utf8();
+        let mut chars = self.rest.chars();
+        let ch = chars.next()?;
+        self.rest = chars.as_str();
         Some(ch)
     }
 
     fn skip_trivia(&mut self) -> Result<(), LexError> {
         loop {
-            while self.peek().is_some_and(char::is_whitespace) {
-                let _ = self.advance();
-            }
-            if self.peek() == Some('/') && self.peek_next() == Some('/') {
-                while let Some(ch) = self.advance() {
-                    if ch == '\n' {
-                        break;
-                    }
-                }
+            self.rest = self.rest.trim_start();
+            if let Some(after) = self.rest.strip_prefix("//") {
+                self.rest = after.find('\n').map_or("", |newline| &after[newline + 1..]);
                 continue;
             }
-            if self.peek() == Some('/') && self.peek_next() == Some('*') {
-                let start = self.pos;
-                let _ = self.advance();
-                let _ = self.advance();
-                let mut closed = false;
-                while let Some(ch) = self.advance() {
-                    if ch == '*' && self.peek() == Some('/') {
-                        let _ = self.advance();
-                        closed = true;
-                        break;
-                    }
+            if let Some(after) = self.rest.strip_prefix("/*") {
+                let start = self.pos();
+                if let Some(end) = after.find("*/") {
+                    self.rest = &after[end + 2..];
+                    continue;
                 }
-                if !closed {
-                    return Err(LexError::UnterminatedBlockComment {
-                        span: Span::new(start, self.pos),
-                    });
-                }
-                continue;
+                self.rest = "";
+                return Err(LexError::UnterminatedBlockComment {
+                    span: Span::new(start, self.pos()),
+                });
             }
             break;
         }
@@ -144,7 +132,7 @@ impl<'a> Lexer<'a> {
 
     fn next_token(&mut self) -> Result<Token, LexError> {
         self.skip_trivia()?;
-        let start = self.pos;
+        let start = self.pos();
         let Some(ch) = self.advance() else {
             return Ok(Token {
                 kind: TokenKind::Eof,
@@ -196,34 +184,33 @@ impl<'a> Lexer<'a> {
             other => {
                 return Err(LexError::UnexpectedChar {
                     ch: other,
-                    span: Span::new(start, self.pos),
+                    span: Span::new(start, self.pos()),
                 });
             }
         };
 
         Ok(Token {
             kind,
-            span: Span::new(start, self.pos),
+            span: Span::new(start, self.pos()),
         })
     }
 
     fn lex_int(&mut self, start: usize) -> Result<TokenKind, LexError> {
-        while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-            let _ = self.advance();
-        }
-        let text = &self.source[start..self.pos];
+        let rest = self.rest.trim_start_matches(|ch: char| ch.is_ascii_digit());
+        self.rest = rest;
+        let end = self.pos();
+        let text = &self.source[start..end];
         let value = text.parse::<u32>().map_err(|_| LexError::InvalidInteger {
             text: text.to_owned(),
-            span: Span::new(start, self.pos),
+            span: Span::new(start, end),
         })?;
         Ok(TokenKind::Int(value))
     }
 
     fn lex_ident(&mut self, start: usize) -> TokenKind {
-        while self.peek().is_some_and(is_ident_continue) {
-            let _ = self.advance();
-        }
-        match &self.source[start..self.pos] {
+        self.rest = self.rest.trim_start_matches(is_ident_continue);
+        let end = self.pos();
+        match &self.source[start..end] {
             "fn" => TokenKind::Fn,
             "theorem" => TokenKind::Theorem,
             "let" => TokenKind::Let,
@@ -316,5 +303,18 @@ mod tests {
         if let Err(err) = unclosed {
             assert!(err.to_string().contains("unterminated"));
         }
+
+        assert!(matches!(
+            lex("-x"),
+            Err(LexError::UnexpectedChar { ch: '-', .. })
+        ));
+        assert!(matches!(
+            lex("&x"),
+            Err(LexError::UnexpectedChar { ch: '&', .. })
+        ));
+        assert!(matches!(
+            lex("/x"),
+            Err(LexError::UnexpectedChar { ch: '/', .. })
+        ));
     }
 }

@@ -1156,36 +1156,101 @@ mod tests {
             Err(TypeError::HComBoundaryMismatch)
         );
 
-        let bad_cof_hcom = arena.hcom(u0, d0, d1, vec![(crate::term::CofTerm::Eq(u0, d0), u0)], u0);
+        let u1 = arena.universe(Level::constant(1));
+        let bad_cof_hcom = arena.hcom(u1, d0, d1, vec![(crate::term::CofTerm::Eq(u0, d0), u0)], u0);
         assert_eq!(
             infer_closed(&arena, bad_cof_hcom).err(),
             Some(TypeError::TypeMismatch)
         );
+        assert_ne!(TypeError::HComBoundaryMismatch.to_string(), "");
+    }
 
-        let pi_endo = arena.pi(Multiplicity::One, v2, v3);
-        let id_lam = arena.lam(Multiplicity::One, v0);
-        let const_x_lam = arena.lam(Multiplicity::One, v3);
-        let endo_path = arena.path(pi_endo, id_lam, id_lam);
-        let overlap_lam_ty = [v0, u0]
-            .into_iter()
-            .fold(endo_path, |cod, dom| arena.pi(Multiplicity::Zero, dom, cod));
-        let overlap_id_hcom = arena.hcom(
-            pi_endo,
+    #[test]
+    fn rejects_nested_hcom_overlap_at_different_depths() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+        let v4 = arena.var(Index(4));
+
+        let path_xx = arena.path(v3, v1, v1);
+        let outer_cap = arena.plam(v1);
+        let cap_refl = arena.plam(v2);
+        let outer_path = arena.path(path_xx, outer_cap, outer_cap);
+        let outer_ty = [v0, u0].into_iter().fold(outer_path, |cod, dom| {
+            arena.pi(Multiplicity::Zero, dom, cod)
+        });
+        let inner_body = arena.hcom(
+            v4,
+            d0,
+            v1,
+            vec![
+                (crate::term::CofTerm::Eq(v0, d0), v4),
+                (crate::term::CofTerm::Eq(v0, d1), v4),
+                (crate::term::CofTerm::Eq(v0, d0), v4),
+            ],
+            v3,
+        );
+        let tube_inner = arena.plam(inner_body);
+        let mid_body = arena.hcom(
+            v4,
+            d0,
+            v1,
+            vec![
+                (crate::term::CofTerm::Eq(v0, d0), v4),
+                (crate::term::CofTerm::Eq(v0, d1), v4),
+                (crate::term::CofTerm::Eq(v1, d0), v4),
+            ],
+            v3,
+        );
+        let tube_mid = arena.plam(mid_body);
+        let outer_body = arena.hcom(
+            v4,
+            d0,
+            v1,
+            vec![
+                (crate::term::CofTerm::Eq(v0, d0), v4),
+                (crate::term::CofTerm::Eq(v0, d1), v4),
+                (crate::term::CofTerm::Eq(v2, d0), v4),
+            ],
+            v3,
+        );
+        let tube_outer = arena.plam(outer_body);
+        let overlap_mid = arena.hcom(
+            path_xx,
             d0,
             d1,
             vec![
-                (crate::term::CofTerm::Eq(v0, d0), id_lam),
-                (crate::term::CofTerm::Eq(v0, d0), const_x_lam),
+                (crate::term::CofTerm::Top, tube_inner),
+                (crate::term::CofTerm::Top, tube_mid),
             ],
-            id_lam,
+            cap_refl,
         );
-        let overlap_id_plam = arena.plam(overlap_id_hcom);
-        let overlap_id_expr = wrap_zero_lams(&mut arena, 2, overlap_id_plam);
+        let overlap_mid_plam = arena.plam(overlap_mid);
+        let overlap_mid_expr = wrap_zero_lams(&mut arena, 2, overlap_mid_plam);
         assert_eq!(
-            check_closed(&arena, overlap_id_expr, overlap_lam_ty),
+            check_closed(&arena, overlap_mid_expr, outer_ty),
             Err(TypeError::HComBoundaryMismatch)
         );
-
-        assert_ne!(TypeError::HComBoundaryMismatch.to_string(), "");
+        let overlap_outer = arena.hcom(
+            path_xx,
+            d0,
+            d1,
+            vec![
+                (crate::term::CofTerm::Top, tube_inner),
+                (crate::term::CofTerm::Top, tube_outer),
+            ],
+            cap_refl,
+        );
+        let overlap_outer_plam = arena.plam(overlap_outer);
+        let overlap_outer_expr = wrap_zero_lams(&mut arena, 2, overlap_outer_plam);
+        assert_eq!(
+            check_closed(&arena, overlap_outer_expr, outer_ty),
+            Err(TypeError::HComBoundaryMismatch)
+        );
     }
 }

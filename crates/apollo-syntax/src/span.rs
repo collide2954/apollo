@@ -13,18 +13,11 @@ impl Span {
     }
 
     #[must_use]
-    pub const fn merge(self, other: Self) -> Self {
-        let start = if self.start < other.start {
-            self.start
-        } else {
-            other.start
-        };
-        let end = if self.end > other.end {
-            self.end
-        } else {
-            other.end
-        };
-        Self { start, end }
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
     }
 }
 

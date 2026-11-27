@@ -1,8 +1,10 @@
 pub mod level;
 pub mod multiplicity;
+pub mod term;
 
 pub use level::{Level, LevelVar};
 pub use multiplicity::{Multiplicity, UsageError, UsageVec};
+pub use term::{DeBruijnLevel, Index, Term, TermArena, TermId};
 
 #[must_use]
 pub const fn version() -> &'static str {

@@ -1,5 +1,7 @@
+pub mod level;
 pub mod multiplicity;
 
+pub use level::{Level, LevelVar};
 pub use multiplicity::{Multiplicity, UsageError, UsageVec};
 
 #[must_use]

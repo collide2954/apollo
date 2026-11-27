@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apollo — Quantitative Cartesian Cubical Theorem Prover</title>
+  <meta name="description" content="Apollo is an interactive theorem prover and verified systems language in Rust.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#top" aria-label="Apollo home">
+        <svg class="emblem" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true">
+          <rect x="4" y="10" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <rect x="14" y="4" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <line x1="4" y1="10" x2="14" y2="4" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="18" y1="10" x2="28" y2="4" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="4" y1="24" x2="14" y2="18" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="18" y1="24" x2="28" y2="18" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+        <span>APOLLO</span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="#pillars">Architecture</a>
+        <a href="#crates">Workspace</a>
+        <a href="#playground">Playground</a>
+        <a href="https://collide2954.github.io/type-theory-is-easy/">Book</a>
+        <a href="https://github.com/collide2954/apollo">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">VERSION 0.2.1 · APACHE-2.0 · MACOS / LINUX / WINDOWS</p>
+          <h1>Prove properties. Emit sound Rust.</h1>
+          <p class="lead">
+            Apollo is an interactive theorem prover and verified systems language in Rust.
+            Apollo uses Quantitative Cartesian Cubical Type Theory.
+            Apollo erases proof terms and compiles verified programs to clean Rust code.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/collide2954/apollo">View Repository</a>
+            <a class="button secondary" href="https://collide2954.github.io/type-theory-is-easy/">Read Type Theory Is Easy</a>
+          </div>
+        </div>
+
+        <div class="code-stack" aria-label="Apollo and Rust code comparison">
+          <div class="code-card">
+            <div class="code-head">
+              <span>identity.ap</span>
+              <span>APOLLO SURFACE SYNTAX</span>
+            </div>
+            <pre><code>fn id(0 A: Type 0, 1 x: A) -&gt; A {
+    x
+}</code></pre>
+          </div>
+          <div class="code-card">
+            <div class="code-head">
+              <span>identity.rs</span>
+              <span>ERASED RUST OUTPUT</span>
+            </div>
+            <pre><code>pub fn id&lt;A&gt;(x: A) -&gt; A {
+    x
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="pillars" class="section">
+      <div class="container">
+        <p class="eyebrow">SPECIFICATION</p>
+        <h2>Core design pillars</h2>
+        <div class="card-grid">
+          <article class="card">
+            <h3>Trusted Kernel</h3>
+            <p>A small Rust kernel checks all proofs with zero external dependencies and zero <code>unsafe</code> code.</p>
+          </article>
+          <article class="card">
+            <h3>Quantitative Erasure</h3>
+            <p>Multiplicities (<code>0</code>, <code>1</code>, <code>ω</code>) separate erased proofs, linear resources, and unrestricted values.</p>
+          </article>
+          <article class="card">
+            <h3>Cartesian Cubical Logic</h3>
+            <p>Interval variables, cofibrations, path types, Kan operations, and Higher Inductive Types support native univalence.</p>
+          </article>
+          <article class="card">
+            <h3>Built-In Automation</h3>
+            <p>An internal e-graph and linear arithmetic solver constructs proofs that the kernel checks independently.</p>
+          </article>
+          <article class="card">
+            <h3>Transactional Proof Search</h3>
+            <p>Immutable proof states let tools test candidate proof steps in memory in parallel.</p>
+          </article>
+          <article class="card">
+            <h3>ASD-STE100 Documentation</h3>
+            <p>Automated checks enforce Simplified Technical English across project documentation and release notes.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="crates" class="section alt">
+      <div class="container">
+        <p class="eyebrow">MODULAR WORKSPACE</p>
+        <h2>Eight crates with strict boundaries</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Crate</th>
+                <th>Role</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>apollo-kernel</code></td>
+                <td>Checks terms, universe levels, multiplicities, and cubical operations.</td>
+              </tr>
+              <tr>
+                <td><code>apollo-syntax</code></td>
+                <td>Lexes and parses source files into syntax trees.</td>
+              </tr>
+              <tr>
+                <td><code>apollo-elab</code></td>
+                <td>Elaborates surface syntax, unifies terms, and runs tactics.</td>
+              </tr>
+              <tr>
+                <td><code>apollo-query</code></td>
+                <td>Runs incremental and parallel compilation queries.</td>
+              </tr>
+              <tr>
+                <td><code>apollo-auto</code></td>
+                <td>Runs e-graph congruence and linear arithmetic automation.</td>
+              </tr>
+              <tr>
+                <td><code>apollo-codegen</code></td>
+                <td>Erases proof terms and emits readable Rust source code.</td>
+              </tr>
+              <tr>
+                <td><code>apollo-lsp</code></td>
+                <td>Serves editor and machine-readable proof interfaces.</td>
+              </tr>
+              <tr>
+                <td><code>apollo-cli</code></td>
+                <td>Gives the unified <code>apollo</code> command-line interface.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="playground" class="section">
+      <div class="container playground-box">
+        <div>
+          <p class="eyebrow">WEBASSEMBLY TARGET</p>
+          <h2>Interactive browser playground</h2>
+          <p>
+            The zero-dependency <code>apollo-kernel</code> crate targets <code>wasm32-unknown-unknown</code>.
+            Once surface parsing and elaboration land, this page loads Apollo directly in your browser.
+          </p>
+        </div>
+        <div class="status-pill">KERNEL 0.2.1 · PARSER NEXT</div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p>Apollo Contributors · Licensed under Apache-2.0</p>
+      <p>
+        <a href="https://github.com/collide2954/apollo/blob/main/docs/kernel-design.md">Kernel Design</a>
+        ·
+        <a href="https://github.com/collide2954/apollo/blob/main/CHANGELOG.md">Changelog</a>
+        ·
+        <a href="https://github.com/collide2954/type-theory-is-easy">Type Theory Is Easy</a>
+      </p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -5,6 +5,15 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
+### Added
+
+- Add canonical universe level algebra with exact decision checks for equality and cumulativity.
+- Add a hash-consed term arena with De Bruijn indices and structural sharing.
+- Add a thread-safe Normalization by Evaluation engine with eta-equivalence and cumulative subtyping.
+- Add a bidirectional QTT typechecker for universes, Pi types, and Sigma types.
+
 ## [0.1.1] - 2026-11-26
 
 ### Added

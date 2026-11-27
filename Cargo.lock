@@ -4,39 +4,39 @@ version = 4
 
 [[package]]
 name = "apollo-auto"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "apollo-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "apollo-kernel",
 ]
 
 [[package]]
 name = "apollo-codegen"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "apollo-elab"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "apollo-kernel"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "apollo-lsp"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "apollo-query"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "apollo-syntax"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "xtask"
-version = "0.1.1"
+version = "0.2.0"

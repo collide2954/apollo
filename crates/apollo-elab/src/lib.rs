@@ -6,7 +6,7 @@ use apollo_kernel::{
     CofTerm, Ctx, Index, Level, Multiplicity, TermArena, TermId, TypeError, check_closed, infer,
 };
 use apollo_syntax::{
-    CofExpr, Decl, Expr, ExprKind, MultAst, ParseError, Span, line_col, parse_module,
+    CofExpr, Decl, DeclKind, Expr, ExprKind, MultAst, ParseError, Span, line_col, parse_module,
 };
 
 #[must_use]
@@ -16,7 +16,9 @@ pub const fn version() -> &'static str {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedDecl {
+    pub kind: DeclKind,
     pub name: String,
+    pub param_names: Vec<String>,
     pub ty: TermId,
     pub body: TermId,
 }
@@ -210,7 +212,9 @@ impl Elaborator {
 
         self.globals.insert(decl.name.clone(), (ty_id, body_id));
         Ok(CheckedDecl {
+            kind: decl.kind,
             name: decl.name.clone(),
+            param_names: decl.params.iter().map(|p| p.name.clone()).collect(),
             ty: ty_id,
             body: body_id,
         })
@@ -639,7 +643,10 @@ mod tests {
         assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
         if let Ok(module) = checked {
             assert_eq!(module.decls.len(), 11);
+            assert_eq!(module.decls[0].kind, apollo_syntax::DeclKind::Fn);
             assert_eq!(module.decls[0].name, "id");
+            assert_eq!(module.decls[0].param_names, vec!["A", "x"]);
+            assert_eq!(module.decls[4].kind, apollo_syntax::DeclKind::Theorem);
             assert_eq!(module.decls[10].name, "cof_branches");
         }
     }

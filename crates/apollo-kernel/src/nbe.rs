@@ -598,6 +598,7 @@ mod tests {
         let u1 = arena.universe(Level::constant(1));
         let v0 = arena.var(Index(0));
         let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
 
         let first_pi_body = arena.pi(Multiplicity::One, u0, v1);
         let pi_a = arena.pi(Multiplicity::One, u0, first_pi_body);
@@ -639,9 +640,17 @@ mod tests {
         let f_y_x = arena.app(f_y, v1);
         let swapped_inner = arena.lam(Multiplicity::One, f_y_x);
         let swapped = arena.lam(Multiplicity::One, swapped_inner);
-        if let (Ok(v_eta), Ok(v_swap)) = (eval(&arena, &env2, eta2), eval(&arena, &env2, swapped)) {
+        let f_x_g = arena.app(f_x, v2);
+        let captured_g_inner = arena.lam(Multiplicity::One, f_x_g);
+        let captured_g = arena.lam(Multiplicity::One, captured_g_inner);
+        if let (Ok(v_eta), Ok(v_swap), Ok(v_cap)) = (
+            eval(&arena, &env2, eta2),
+            eval(&arena, &env2, swapped),
+            eval(&arena, &env2, captured_g),
+        ) {
             assert_eq!(conv(&arena, 2, &v_eta, &f_var), Ok(true));
             assert_eq!(conv(&arena, 2, &v_swap, &f_var), Ok(false));
+            assert_eq!(conv(&arena, 2, &v_cap, &f_var), Ok(false));
         }
 
         let fst_f = arena.fst(v1);

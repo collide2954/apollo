@@ -5,5 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+apollo-elab.workspace = true
+apollo-kernel.workspace = true
+apollo-syntax.workspace = true
+
 [lints]
 workspace = true

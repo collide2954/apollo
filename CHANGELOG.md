@@ -5,6 +5,13 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-26
+
+### Changed
+
+- Replace index loops in `Level::max` and `Level::leq` with slice operations and binary search.
+- Add nested binder conversion, subtyping, and erased type-level projection tests in `apollo-kernel`.
+
 ## [0.2.0] - 2026-11-26
 
 ### Added

@@ -5,6 +5,16 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
+### Added
+
+- Add `Unit`, `Void`, `Bool`, and `Nat` inductive types, eliminators, and Kan rules in `apollo-kernel`.
+- Add branch-aware QTT usage joins and inductive `Path` proof checking in `apollo-kernel`.
+- Add `match` expressions, dependent motives, and inductive literals in `apollo-syntax` and `apollo-elab`.
+- Add `Unit`, `Void`, `Bool`, and `Nat` extraction to `()`, `Infallible`, `bool`, and `u128` loops in `apollo-codegen`.
+- Add `examples/arithmetic.ap` with verified arithmetic proofs and live Rust execution tests.
+
 ## [0.6.0] - 2026-11-27
 
 ### Added

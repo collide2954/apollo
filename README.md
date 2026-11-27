@@ -35,11 +35,13 @@ Run the typechecker on the example prelude:
 cargo run -p apollo-cli -- check examples/prelude.ap
 ```
 
-Extract verified `#![no_std]` Rust code from the extractable example:
+Extract verified `#![no_std]` Rust code from the arithmetic example:
 
 ```bash
-cargo run -p apollo-cli -- build examples/extractable.ap
+cargo run -p apollo-cli -- build examples/arithmetic.ap
 ```
+
+You can also build `examples/extractable.ap` for polymorphic and refinement examples.
 
 ## Documentation
 

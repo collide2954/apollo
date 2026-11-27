@@ -72,6 +72,26 @@ pub struct Expr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    Unit(Span),
+    True(Span),
+    False(Span),
+    Zero(Span),
+    Succ {
+        pred: String,
+        ih: Option<String>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchArm {
+    pub pat: Pattern,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExprKind {
     Universe(u32),
     Interval,
@@ -140,5 +160,19 @@ pub enum ExprKind {
         ty: Box<Expr>,
         value: Box<Expr>,
         body: Box<Expr>,
+    },
+    Unit,
+    Tt,
+    Void,
+    Bool,
+    True,
+    False,
+    Nat,
+    Zero,
+    Succ(Box<Expr>),
+    Match {
+        scrut: Box<Expr>,
+        motive: Option<(String, Box<Expr>)>,
+        arms: Vec<MatchArm>,
     },
 }

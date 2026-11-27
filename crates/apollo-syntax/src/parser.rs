@@ -1,6 +1,8 @@
 use std::fmt;
 
-use crate::ast::{CofExpr, Decl, DeclKind, Expr, ExprKind, HComBranch, Module, MultAst, Param};
+use crate::ast::{
+    CofExpr, Decl, DeclKind, Expr, ExprKind, HComBranch, MatchArm, Module, MultAst, Param, Pattern,
+};
 use crate::lexer::{LexError, Token, TokenKind, lex};
 use crate::span::Span;
 
@@ -405,6 +407,11 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    const fn single_token_expr(&mut self, kind: ExprKind, span: Span) -> Expr {
+        let _ = self.advance();
+        Expr { kind, span }
+    }
+
     fn parse_atom(&mut self) -> Result<Expr, ParseError> {
         let token = self.peek().clone();
         match token.kind {
@@ -416,42 +423,27 @@ impl<'a> Parser<'a> {
                     span: token.span.merge(end),
                 })
             }
-            TokenKind::Interval => {
-                let _ = self.advance();
-                Ok(Expr {
-                    kind: ExprKind::Interval,
-                    span: token.span,
-                })
-            }
-            TokenKind::Int(0) => {
-                let _ = self.advance();
-                Ok(Expr {
-                    kind: ExprKind::DimZero,
-                    span: token.span,
-                })
-            }
-            TokenKind::Int(1) => {
-                let _ = self.advance();
-                Ok(Expr {
-                    kind: ExprKind::DimOne,
-                    span: token.span,
-                })
-            }
+            TokenKind::Interval => Ok(self.single_token_expr(ExprKind::Interval, token.span)),
+            TokenKind::Int(0) => Ok(self.single_token_expr(ExprKind::DimZero, token.span)),
+            TokenKind::Int(1) => Ok(self.single_token_expr(ExprKind::DimOne, token.span)),
             TokenKind::Int(value) => Err(ParseError::InvalidDimension {
                 value,
                 span: token.span,
             }),
-            TokenKind::Ident(name) => {
-                let _ = self.advance();
-                Ok(Expr {
-                    kind: ExprKind::Var(name),
-                    span: token.span,
-                })
-            }
+            TokenKind::Ident(name) => Ok(self.single_token_expr(ExprKind::Var(name), token.span)),
             TokenKind::Sigma => self.parse_sigma(),
             TokenKind::Path => self.parse_path(),
             TokenKind::Coe => self.parse_coe(),
             TokenKind::HCom => self.parse_hcom(),
+            TokenKind::Unit => Ok(self.single_token_expr(ExprKind::Unit, token.span)),
+            TokenKind::Void => Ok(self.single_token_expr(ExprKind::Void, token.span)),
+            TokenKind::Bool => Ok(self.single_token_expr(ExprKind::Bool, token.span)),
+            TokenKind::True => Ok(self.single_token_expr(ExprKind::True, token.span)),
+            TokenKind::False => Ok(self.single_token_expr(ExprKind::False, token.span)),
+            TokenKind::Nat => Ok(self.single_token_expr(ExprKind::Nat, token.span)),
+            TokenKind::Zero => Ok(self.single_token_expr(ExprKind::Zero, token.span)),
+            TokenKind::Succ => self.parse_succ(),
+            TokenKind::Match => self.parse_match(),
             TokenKind::LBrace => self.parse_block(),
             TokenKind::LParen => self.parse_paren_expr(),
             _ => Err(ParseError::UnexpectedToken {
@@ -642,8 +634,114 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_succ(&mut self) -> Result<Expr, ParseError> {
+        let start = self.expect(&TokenKind::Succ, "'succ'")?;
+        let _ = self.expect(&TokenKind::LParen, "'('")?;
+        let pred = self.parse_expr()?;
+        let end = self.expect(&TokenKind::RParen, "')'")?;
+        Ok(Expr {
+            kind: ExprKind::Succ(Box::new(pred)),
+            span: start.merge(end),
+        })
+    }
+
+    fn parse_match(&mut self) -> Result<Expr, ParseError> {
+        let start = self.expect(&TokenKind::Match, "'match'")?;
+        let scrut = self.parse_expr()?;
+        let motive = if self.check(&TokenKind::As) {
+            let _ = self.advance();
+            let _ = self.expect(&TokenKind::Pipe, "'|'")?;
+            let (name, _) = self.expect_ident("motive binder")?;
+            let _ = self.expect(&TokenKind::Pipe, "'|'")?;
+            let motive_ty = self.parse_expr()?;
+            Some((name, Box::new(motive_ty)))
+        } else {
+            None
+        };
+        let _ = self.expect(&TokenKind::LBrace, "'{'")?;
+        let mut arms = Vec::new();
+        while !self.check(&TokenKind::RBrace) {
+            arms.push(self.parse_match_arm()?);
+            if self.check(&TokenKind::Comma) {
+                let _ = self.advance();
+            } else {
+                break;
+            }
+        }
+        let end = self.expect(&TokenKind::RBrace, "'}'")?;
+        Ok(Expr {
+            kind: ExprKind::Match {
+                scrut: Box::new(scrut),
+                motive,
+                arms,
+            },
+            span: start.merge(end),
+        })
+    }
+
+    fn parse_match_arm(&mut self) -> Result<MatchArm, ParseError> {
+        let pat = self.parse_pattern()?;
+        let start = pattern_span(&pat);
+        let _ = self.expect(&TokenKind::FatArrow, "'=>'")?;
+        let body = self.parse_expr()?;
+        let span = start.merge(body.span);
+        Ok(MatchArm { pat, body, span })
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let token = self.peek().clone();
+        match token.kind {
+            TokenKind::LParen => {
+                let start = self.advance().span;
+                let end = self.expect(&TokenKind::RParen, "')'")?;
+                Ok(Pattern::Unit(start.merge(end)))
+            }
+            TokenKind::True => {
+                let _ = self.advance();
+                Ok(Pattern::True(token.span))
+            }
+            TokenKind::False => {
+                let _ = self.advance();
+                Ok(Pattern::False(token.span))
+            }
+            TokenKind::Zero => {
+                let _ = self.advance();
+                Ok(Pattern::Zero(token.span))
+            }
+            TokenKind::Succ => {
+                let start = self.advance().span;
+                let _ = self.expect(&TokenKind::LParen, "'('")?;
+                let (pred, _) = self.expect_ident("predecessor binder")?;
+                let ih = if self.check(&TokenKind::Comma) {
+                    let _ = self.advance();
+                    let (ih_name, _) = self.expect_ident("induction hypothesis binder")?;
+                    Some(ih_name)
+                } else {
+                    None
+                };
+                let end = self.expect(&TokenKind::RParen, "')'")?;
+                Ok(Pattern::Succ {
+                    pred,
+                    ih,
+                    span: start.merge(end),
+                })
+            }
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "pattern ('()', 'true', 'false', 'zero', or 'succ')".to_owned(),
+                span: token.span,
+            }),
+        }
+    }
+
     fn parse_paren_expr(&mut self) -> Result<Expr, ParseError> {
         let start = self.expect(&TokenKind::LParen, "'('")?;
+        if self.check(&TokenKind::RParen) {
+            let end = self.advance().span;
+            return Ok(Expr {
+                kind: ExprKind::Tt,
+                span: start.merge(end),
+            });
+        }
         let first = self.parse_expr()?;
         if self.check(&TokenKind::Comma) {
             let _ = self.advance();
@@ -674,6 +772,16 @@ impl<'a> Parser<'a> {
                 span: start.merge(end),
             })
         }
+    }
+}
+
+const fn pattern_span(pat: &Pattern) -> Span {
+    match pat {
+        Pattern::Unit(span)
+        | Pattern::True(span)
+        | Pattern::False(span)
+        | Pattern::Zero(span)
+        | Pattern::Succ { span, .. } => *span,
     }
 }
 
@@ -780,6 +888,32 @@ mod tests {
             grouped_call.map(|e| e.kind),
             Ok(ExprKind::App { .. })
         ));
+
+        let unit_tt = parse_expr("()");
+        assert!(matches!(unit_tt.map(|e| e.kind), Ok(ExprKind::Tt)));
+
+        let ind_mod = parse_module(
+            r"
+            fn absurd(0 A: Type 0, 1 v: Void) -> A { match v {} }
+            fn unit_id(1 u: Unit) -> Unit { match u { () => () } }
+            fn not(1 b: Bool) -> Bool { match b { true => false, false => true } }
+            fn add(1 n: Nat, 1 m: Nat) -> Nat {
+                match n { zero => m, succ(k, ih) => succ(ih) }
+            }
+            theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+                match b as |x| Path(_ => Bool, not(not(x)), x) {
+                    true => <i> true,
+                    false => <i> false,
+                }
+            }
+            fn pred(1 n: Nat) -> Nat { match n { zero => zero, succ(k) => k } }
+        ",
+        );
+        assert!(ind_mod.is_ok(), "parse err: {:?}", ind_mod.err());
+        if let Ok(m) = ind_mod {
+            assert_eq!(m.decls.len(), 6);
+        }
+        assert!(parse_expr("match x { bad => x }").is_err());
     }
 
     #[test]

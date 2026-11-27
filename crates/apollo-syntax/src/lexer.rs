@@ -13,6 +13,16 @@ pub enum TokenKind {
     Interval,
     Coe,
     HCom,
+    Unit,
+    Void,
+    Bool,
+    Nat,
+    True,
+    False,
+    Zero,
+    Succ,
+    Match,
+    As,
     Many,
     Top,
     Bot,
@@ -220,6 +230,16 @@ impl<'a> Lexer<'a> {
             "I" => TokenKind::Interval,
             "coe" => TokenKind::Coe,
             "hcom" => TokenKind::HCom,
+            "Unit" => TokenKind::Unit,
+            "Void" => TokenKind::Void,
+            "Bool" => TokenKind::Bool,
+            "Nat" => TokenKind::Nat,
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
+            "zero" => TokenKind::Zero,
+            "succ" => TokenKind::Succ,
+            "match" => TokenKind::Match,
+            "as" => TokenKind::As,
             "many" => TokenKind::Many,
             "top" => TokenKind::Top,
             "bot" => TokenKind::Bot,
@@ -275,6 +295,28 @@ mod tests {
             let kinds: Vec<TokenKind> = list.into_iter().map(|t| t.kind).collect();
             assert_eq!(kinds[0], TokenKind::Sigma);
             assert!(kinds.contains(&TokenKind::Pipe));
+        }
+
+        let ind = lex("Unit Void Bool Nat true false zero succ match as");
+        assert!(ind.is_ok());
+        if let Ok(list) = ind {
+            let kinds: Vec<TokenKind> = list.into_iter().map(|t| t.kind).collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    TokenKind::Unit,
+                    TokenKind::Void,
+                    TokenKind::Bool,
+                    TokenKind::Nat,
+                    TokenKind::True,
+                    TokenKind::False,
+                    TokenKind::Zero,
+                    TokenKind::Succ,
+                    TokenKind::Match,
+                    TokenKind::As,
+                    TokenKind::Eof,
+                ]
+            );
         }
     }
 

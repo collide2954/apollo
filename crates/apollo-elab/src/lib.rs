@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
-use apollo_kernel::nbe::{Value, eval, quote};
+use apollo_kernel::nbe::{Closure, Value, eval, quote};
 use apollo_kernel::{
     CofTerm, Ctx, Index, Level, Multiplicity, TermArena, TermId, TypeError, check_closed, infer,
 };
 use apollo_syntax::{
-    CofExpr, Decl, DeclKind, Expr, ExprKind, MultAst, ParseError, Span, line_col, parse_module,
+    CofExpr, Decl, DeclKind, Expr, ExprKind, MatchArm, MultAst, ParseError, Pattern, Span,
+    line_col, parse_module,
 };
 
 #[must_use]
@@ -46,6 +48,10 @@ pub enum ElabError {
     UnsupportedUnannotatedLet {
         span: Span,
     },
+    InvalidMatch {
+        message: String,
+        span: Span,
+    },
     Type {
         decl: String,
         err: TypeError,
@@ -68,6 +74,7 @@ impl ElabError {
             | Self::UnknownName { span, .. }
             | Self::ExpectedPath { span }
             | Self::UnsupportedUnannotatedLet { span }
+            | Self::InvalidMatch { span, .. }
             | Self::Type { span, .. } => *span,
         }
     }
@@ -91,6 +98,7 @@ impl fmt::Display for ElabError {
             Self::UnsupportedUnannotatedLet { .. } => {
                 f.write_str("let expression requires a known expected type")
             }
+            Self::InvalidMatch { message, .. } => write!(f, "invalid match: {message}"),
             Self::Type { decl, err, .. } => write!(f, "in '{decl}': {err}"),
         }
     }
@@ -265,16 +273,7 @@ impl Elaborator {
                 left,
                 right,
             } => self.elab_path(dim_name, family, left, right),
-            ExprKind::PLam { dim_name, body } => {
-                let dim = self.push_dim(dim_name.clone());
-                let next_expected = match expected {
-                    Some(Value::Path { family, .. }) => family.apply(&self.arena, dim).ok(),
-                    _ => None,
-                };
-                let body_res = self.elab_expr(body, next_expected.as_ref());
-                self.pop_binding();
-                Ok(self.arena.plam(body_res?))
-            }
+            ExprKind::PLam { dim_name, body } => self.elab_plam(dim_name, body, expected),
             ExprKind::PApp { path, dim } => self.elab_papp(path, dim, expr.span),
             ExprKind::Coe {
                 dim_name,
@@ -307,6 +306,23 @@ impl Elaborator {
                 },
                 expected,
             ),
+            ExprKind::Unit => Ok(self.arena.unit()),
+            ExprKind::Tt => Ok(self.arena.tt()),
+            ExprKind::Void => Ok(self.arena.void()),
+            ExprKind::Bool => Ok(self.arena.bool_ty()),
+            ExprKind::True => Ok(self.arena.bool_true()),
+            ExprKind::False => Ok(self.arena.bool_false()),
+            ExprKind::Nat => Ok(self.arena.nat()),
+            ExprKind::Zero => Ok(self.arena.zero()),
+            ExprKind::Succ(pred) => {
+                let pred_id = self.elab_expr(pred, Some(&Value::Nat))?;
+                Ok(self.arena.succ(pred_id))
+            }
+            ExprKind::Match {
+                scrut,
+                motive,
+                arms,
+            } => self.elab_match(scrut, motive.as_ref(), arms, expected, expr.span),
         }
     }
 
@@ -396,6 +412,22 @@ impl Elaborator {
         let second_res = self.elab_expr(second, None);
         self.pop_binding();
         Ok(self.arena.sigma(to_mult(mult), first_id, second_res?))
+    }
+
+    fn elab_plam(
+        &mut self,
+        dim_name: &str,
+        body: &Expr,
+        expected: Option<&Value>,
+    ) -> Result<TermId, ElabError> {
+        let dim = self.push_dim(dim_name.to_owned());
+        let next_expected = match expected {
+            Some(Value::Path { family, .. }) => family.apply(&self.arena, dim).ok(),
+            _ => None,
+        };
+        let body_res = self.elab_expr(body, next_expected.as_ref());
+        self.pop_binding();
+        Ok(self.arena.plam(body_res?))
     }
 
     fn elab_path(
@@ -539,6 +571,214 @@ impl Elaborator {
             err: TypeError::Eval(err),
             span,
         })
+    }
+
+    fn elab_match(
+        &mut self,
+        scrut: &Expr,
+        motive: Option<&(String, Box<Expr>)>,
+        arms: &[MatchArm],
+        expected: Option<&Value>,
+        span: Span,
+    ) -> Result<TermId, ElabError> {
+        let scrut_id = self.elab_expr(scrut, None)?;
+        let (scrut_ty, _) = infer(&self.arena, &mut self.ctx, Multiplicity::Zero, scrut_id)
+            .map_err(|err| ElabError::Type {
+                decl: self.decl_name.clone(),
+                err,
+                span: scrut.span,
+            })?;
+
+        let (motive_id, motive_cl) = if let Some((name, motive_expr)) = motive {
+            let _ = self.push_var(name.clone(), scrut_ty.clone());
+            let m_res = self.elab_expr(motive_expr, None);
+            self.pop_binding();
+            let m_id = m_res?;
+            (m_id, Closure::new(self.env.clone(), m_id))
+        } else if let Some(exp_val) = expected {
+            let m_id = quote(&mut self.arena, self.ctx.depth() + 1, exp_val).map_err(|err| {
+                ElabError::Type {
+                    decl: self.decl_name.clone(),
+                    err: TypeError::Eval(err),
+                    span,
+                }
+            })?;
+            (m_id, Closure::new(self.env.clone(), m_id))
+        } else {
+            return Err(ElabError::InvalidMatch {
+                message: "match expression requires an explicit motive or known expected type"
+                    .to_owned(),
+                span,
+            });
+        };
+
+        match scrut_ty {
+            Value::Void => self.elab_void_match(motive_id, scrut_id, arms, span),
+            Value::Unit => self.elab_unit_match(motive_id, &motive_cl, scrut_id, arms, span),
+            Value::Bool => self.elab_bool_match(motive_id, &motive_cl, scrut_id, arms, span),
+            Value::Nat => self.elab_nat_match(motive_id, &motive_cl, scrut_id, arms, span),
+            _ => Err(ElabError::InvalidMatch {
+                message: "scrutinee must have type Void, Unit, Bool, or Nat".to_owned(),
+                span: scrut.span,
+            }),
+        }
+    }
+
+    fn elab_void_match(
+        &mut self,
+        motive_id: TermId,
+        scrut_id: TermId,
+        arms: &[MatchArm],
+        span: Span,
+    ) -> Result<TermId, ElabError> {
+        if !arms.is_empty() {
+            return Err(ElabError::InvalidMatch {
+                message: "match on Void must have zero arms".to_owned(),
+                span,
+            });
+        }
+        Ok(self.arena.void_elim(motive_id, scrut_id))
+    }
+
+    fn elab_unit_match(
+        &mut self,
+        motive_id: TermId,
+        motive_cl: &Closure,
+        scrut_id: TermId,
+        arms: &[MatchArm],
+        span: Span,
+    ) -> Result<TermId, ElabError> {
+        let [arm] = arms else {
+            return Err(ElabError::InvalidMatch {
+                message: "match on Unit must have exactly one '()' arm".to_owned(),
+                span,
+            });
+        };
+        if !matches!(arm.pat, Pattern::Unit(_)) {
+            return Err(ElabError::InvalidMatch {
+                message: "expected '()' pattern for Unit".to_owned(),
+                span: arm.span,
+            });
+        }
+        let exp = motive_cl
+            .apply(&self.arena, Value::Tt)
+            .map_err(|err| ElabError::Type {
+                decl: self.decl_name.clone(),
+                err: TypeError::Eval(err),
+                span,
+            })?;
+        let on_unit = self.elab_expr(&arm.body, Some(&exp))?;
+        Ok(self.arena.unit_elim(motive_id, on_unit, scrut_id))
+    }
+
+    fn elab_bool_match(
+        &mut self,
+        motive_id: TermId,
+        motive_cl: &Closure,
+        scrut_id: TermId,
+        arms: &[MatchArm],
+        span: Span,
+    ) -> Result<TermId, ElabError> {
+        let mut on_true_arm = None;
+        let mut on_false_arm = None;
+        for arm in arms {
+            match arm.pat {
+                Pattern::True(_) if on_true_arm.is_none() => on_true_arm = Some(&arm.body),
+                Pattern::False(_) if on_false_arm.is_none() => on_false_arm = Some(&arm.body),
+                _ => {
+                    return Err(ElabError::InvalidMatch {
+                        message: "expected unique 'true' and 'false' arms for Bool".to_owned(),
+                        span: arm.span,
+                    });
+                }
+            }
+        }
+        let (Some(true_expr), Some(false_expr)) = (on_true_arm, on_false_arm) else {
+            return Err(ElabError::InvalidMatch {
+                message: "match on Bool must cover both 'true' and 'false'".to_owned(),
+                span,
+            });
+        };
+        let true_ty = motive_cl
+            .apply(&self.arena, Value::True)
+            .map_err(|err| ElabError::Type {
+                decl: self.decl_name.clone(),
+                err: TypeError::Eval(err),
+                span,
+            })?;
+        let false_ty =
+            motive_cl
+                .apply(&self.arena, Value::False)
+                .map_err(|err| ElabError::Type {
+                    decl: self.decl_name.clone(),
+                    err: TypeError::Eval(err),
+                    span,
+                })?;
+        let on_true = self.elab_expr(true_expr, Some(&true_ty))?;
+        let on_false = self.elab_expr(false_expr, Some(&false_ty))?;
+        Ok(self.arena.bool_elim(motive_id, on_true, on_false, scrut_id))
+    }
+
+    fn elab_nat_match(
+        &mut self,
+        motive_id: TermId,
+        motive_cl: &Closure,
+        scrut_id: TermId,
+        arms: &[MatchArm],
+        span: Span,
+    ) -> Result<TermId, ElabError> {
+        let mut zero_arm = None;
+        let mut succ_arm = None;
+        for arm in arms {
+            match &arm.pat {
+                Pattern::Zero(_) if zero_arm.is_none() => zero_arm = Some(&arm.body),
+                Pattern::Succ { pred, ih, .. } if succ_arm.is_none() => {
+                    succ_arm = Some((pred.as_str(), ih.as_deref(), &arm.body));
+                }
+                _ => {
+                    return Err(ElabError::InvalidMatch {
+                        message: "expected unique 'zero' and 'succ' arms for Nat".to_owned(),
+                        span: arm.span,
+                    });
+                }
+            }
+        }
+        let (Some(zero_expr), Some((pred_name, ih_name, succ_expr))) = (zero_arm, succ_arm) else {
+            return Err(ElabError::InvalidMatch {
+                message: "match on Nat must cover both 'zero' and 'succ'".to_owned(),
+                span,
+            });
+        };
+        let base_ty = motive_cl
+            .apply(&self.arena, Value::Zero)
+            .map_err(|err| ElabError::Type {
+                decl: self.decl_name.clone(),
+                err: TypeError::Eval(err),
+                span,
+            })?;
+        let base_id = self.elab_expr(zero_expr, Some(&base_ty))?;
+
+        let pred_var = self.push_var(pred_name.to_owned(), Value::Nat);
+        let ih_ty = motive_cl
+            .apply(&self.arena, pred_var.clone())
+            .map_err(|err| ElabError::Type {
+                decl: self.decl_name.clone(),
+                err: TypeError::Eval(err),
+                span,
+            })?;
+        let succ_ty = motive_cl
+            .apply(&self.arena, Value::Succ(Arc::new(pred_var)))
+            .map_err(|err| ElabError::Type {
+                decl: self.decl_name.clone(),
+                err: TypeError::Eval(err),
+                span,
+            })?;
+        let ih_binding = ih_name.unwrap_or("_").to_owned();
+        let _ = self.push_var(ih_binding, ih_ty);
+        let step_res = self.elab_expr(succ_expr, Some(&succ_ty));
+        self.pop_binding();
+        self.pop_binding();
+        Ok(self.arena.nat_elim(motive_id, base_id, step_res?, scrut_id))
     }
 }
 
@@ -719,9 +959,94 @@ mod tests {
             ElabError::UnsupportedUnannotatedLet {
                 span: apollo_syntax::Span::new(0, 1),
             },
+            ElabError::InvalidMatch {
+                message: "bad".to_owned(),
+                span: apollo_syntax::Span::new(0, 1),
+            },
         ] {
             assert_eq!(sample.span(), apollo_syntax::Span::new(0, 1));
             assert_ne!(sample.to_string(), "");
+        }
+    }
+
+    #[test]
+    fn elaborates_inductive_types_match_and_dependent_proofs() {
+        let src = r"
+            fn absurd(0 A: Type 0, 1 v: Void) -> A {
+                match v {}
+            }
+
+            fn unit_id(1 u: Unit) -> Unit {
+                match u { () => () }
+            }
+
+            fn not(1 b: Bool) -> Bool {
+                match b {
+                    true => false,
+                    false => true,
+                }
+            }
+
+            theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+                match b as |x| Path(_ => Bool, not(not(x)), x) {
+                    true => <i> true,
+                    false => <i> false,
+                }
+            }
+
+            fn pred(1 n: Nat) -> Nat {
+                match n {
+                    zero => zero,
+                    succ(k) => k,
+                }
+            }
+
+            fn add(1 n: Nat, 1 m: Nat) -> Nat {
+                match n {
+                    zero => m,
+                    succ(_, ih) => succ(ih),
+                }
+            }
+
+            theorem add_zero_right(0 n: Nat) -> Path(_ => Nat, add(n, zero), n) {
+                match n as |x| Path(_ => Nat, add(x, zero), x) {
+                    zero => <i> zero,
+                    succ(k, ih) => <i> succ(ih @ i),
+                }
+            }
+
+            fn mul(1 n: Nat, ω m: Nat) -> Nat {
+                match n {
+                    zero => zero,
+                    succ(_, ih) => add(ih, m),
+                }
+            }
+        ";
+
+        let checked = check_source(src);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+        if let Ok(module) = checked {
+            assert_eq!(module.decls.len(), 8);
+        }
+
+        for bad in [
+            "fn f(0 A: Type 0, 1 x: A) -> A { match x {} }",
+            "fn f(1 v: Void) -> Unit { match v { () => () } }",
+            "fn f(1 u: Unit) -> Unit { match u {} }",
+            "fn f(1 u: Unit) -> Unit { match u { true => () } }",
+            "fn f(1 b: Bool) -> Bool { match b { true => false } }",
+            "fn f(1 b: Bool) -> Bool { match b { true => false, true => true } }",
+            "fn f(1 n: Nat) -> Nat { match n { zero => zero } }",
+            "fn f(1 n: Nat) -> Nat { match n { zero => zero, true => zero } }",
+            "fn f(1 g: (1 _: Bool) -> Bool, 1 b: Bool) -> Bool { g(match b { true => false, false => true }) }",
+        ] {
+            assert!(
+                matches!(
+                    check_source(bad).err(),
+                    Some(ElabError::InvalidMatch { .. })
+                ),
+                "expected InvalidMatch for: {bad}"
+            );
         }
     }
 }

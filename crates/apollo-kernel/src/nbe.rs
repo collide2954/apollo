@@ -590,4 +590,82 @@ mod tests {
         let invalid_err = EvalError::InvalidTermId(u0);
         assert!(invalid_err.to_string().contains("invalid term id"));
     }
+
+    #[test]
+    fn distinguishes_nested_binders_and_partial_matches() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let u1 = arena.universe(Level::constant(1));
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+
+        let first_pi_body = arena.pi(Multiplicity::One, u0, v1);
+        let pi_a = arena.pi(Multiplicity::One, u0, first_pi_body);
+        let second_pi_body = arena.pi(Multiplicity::One, u0, v0);
+        let pi_b = arena.pi(Multiplicity::One, u0, second_pi_body);
+        if let (Ok(va), Ok(vb)) = (eval(&arena, &[], pi_a), eval(&arena, &[], pi_b)) {
+            assert_eq!(quote(&mut arena, 0, &va), Ok(pi_a));
+            assert_eq!(conv(&arena, 0, &va, &vb), Ok(false));
+            assert_eq!(subtype(&arena, 0, &va, &vb), Ok(false));
+        }
+
+        let first_sig_body = arena.sigma(Multiplicity::One, u0, v1);
+        let sig_a = arena.sigma(Multiplicity::One, u0, first_sig_body);
+        let second_sig_body = arena.sigma(Multiplicity::One, u0, v0);
+        let sig_b = arena.sigma(Multiplicity::One, u0, second_sig_body);
+        if let (Ok(va), Ok(vb)) = (eval(&arena, &[], sig_a), eval(&arena, &[], sig_b)) {
+            assert_eq!(quote(&mut arena, 0, &va), Ok(sig_a));
+            assert_eq!(conv(&arena, 0, &va, &vb), Ok(false));
+            assert_eq!(subtype(&arena, 0, &va, &vb), Ok(false));
+        }
+
+        let first_lam_body = arena.lam(Multiplicity::One, v1);
+        let lam_a = arena.lam(Multiplicity::One, first_lam_body);
+        let second_lam_body = arena.lam(Multiplicity::One, v0);
+        let lam_b = arena.lam(Multiplicity::One, second_lam_body);
+        if let (Ok(va), Ok(vb)) = (eval(&arena, &[], lam_a), eval(&arena, &[], lam_b)) {
+            assert_eq!(conv(&arena, 0, &va, &vb), Ok(false));
+        }
+
+        let f_var = Value::var(DeBruijnLevel(0));
+        let g_var = Value::var(DeBruijnLevel(1));
+        let env2 = vec![f_var.clone(), g_var];
+        let v3 = arena.var(Index(3));
+        let f_x = arena.app(v3, v1);
+        let f_x_y = arena.app(f_x, v0);
+        let eta2_inner = arena.lam(Multiplicity::One, f_x_y);
+        let eta2 = arena.lam(Multiplicity::One, eta2_inner);
+        let f_y = arena.app(v3, v0);
+        let f_y_x = arena.app(f_y, v1);
+        let swapped_inner = arena.lam(Multiplicity::One, f_y_x);
+        let swapped = arena.lam(Multiplicity::One, swapped_inner);
+        if let (Ok(v_eta), Ok(v_swap)) = (eval(&arena, &env2, eta2), eval(&arena, &env2, swapped)) {
+            assert_eq!(conv(&arena, 2, &v_eta, &f_var), Ok(true));
+            assert_eq!(conv(&arena, 2, &v_swap, &f_var), Ok(false));
+        }
+
+        let fst_f = arena.fst(v1);
+        let snd_f = arena.snd(v1);
+        let bad_pair_snd = arena.pair(fst_f, u0);
+        let bad_pair_fst = arena.pair(u0, snd_f);
+        if let (Ok(p_bad_snd), Ok(p_bad_fst)) = (
+            eval(&arena, &env2, bad_pair_snd),
+            eval(&arena, &env2, bad_pair_fst),
+        ) {
+            assert_eq!(conv(&arena, 2, &p_bad_snd, &f_var), Ok(false));
+            assert_eq!(conv(&arena, 2, &p_bad_fst, &f_var), Ok(false));
+        }
+
+        let f_u0 = arena.app(v1, u0);
+        let f_u1 = arena.app(v1, u1);
+        let g_u0 = arena.app(v0, u0);
+        if let (Ok(vf0), Ok(vf1), Ok(vg0)) = (
+            eval(&arena, &env2, f_u0),
+            eval(&arena, &env2, f_u1),
+            eval(&arena, &env2, g_u0),
+        ) {
+            assert_eq!(conv(&arena, 2, &vf0, &vf1), Ok(false));
+            assert_eq!(conv(&arena, 2, &vf0, &vg0), Ok(false));
+        }
+    }
 }

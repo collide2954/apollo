@@ -81,29 +81,27 @@ impl Level {
     #[must_use]
     pub fn max(&self, other: &Self) -> Self {
         let mut vars = Vec::with_capacity(self.vars.len() + other.vars.len());
-        let mut i = 0;
-        let mut j = 0;
-        while i < self.vars.len() && j < other.vars.len() {
-            let (lv, lk) = self.vars[i];
-            let (rv, rk) = other.vars[j];
+        let mut left = self.vars.as_slice();
+        let mut right = other.vars.as_slice();
+        while let (Some(&(lv, lk)), Some(&(rv, rk))) = (left.first(), right.first()) {
             match lv.cmp(&rv) {
                 Ordering::Less => {
                     vars.push((lv, lk));
-                    i += 1;
+                    left = &left[1..];
                 }
                 Ordering::Greater => {
                     vars.push((rv, rk));
-                    j += 1;
+                    right = &right[1..];
                 }
                 Ordering::Equal => {
                     vars.push((lv, lk.max(rk)));
-                    i += 1;
-                    j += 1;
+                    left = &left[1..];
+                    right = &right[1..];
                 }
             }
         }
-        vars.extend_from_slice(&self.vars[i..]);
-        vars.extend_from_slice(&other.vars[j..]);
+        vars.extend_from_slice(left);
+        vars.extend_from_slice(right);
         Self {
             constant: self.constant.max(other.constant),
             vars,
@@ -115,16 +113,12 @@ impl Level {
         if self.constant > other.constant {
             return false;
         }
-        let mut j = 0;
-        for &(var, offset) in &self.vars {
-            while j < other.vars.len() && other.vars[j].0 < var {
-                j += 1;
-            }
-            if j >= other.vars.len() || other.vars[j].0 != var || offset > other.vars[j].1 {
-                return false;
-            }
-        }
-        true
+        self.vars.iter().all(|&(var, offset)| {
+            other
+                .vars
+                .binary_search_by_key(&var, |&(v, _)| v)
+                .is_ok_and(|idx| offset <= other.vars[idx].1)
+        })
     }
 
     #[must_use]
@@ -161,9 +155,8 @@ impl fmt::Display for Level {
 
         let max_var_offset = self.vars.iter().map(|&(_, k)| k).max().unwrap_or(0);
         let include_const = self.constant > max_var_offset;
-        let term_count = self.vars.len() + usize::from(include_const);
 
-        if term_count == 1 {
+        if self.vars.len() == 1 && !include_const {
             let (var, offset) = self.vars[0];
             return format_var_term(f, var, offset);
         }

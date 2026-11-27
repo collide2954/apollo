@@ -526,4 +526,49 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn distinguishes_outer_type_binders_and_allows_erased_type_level_projection() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+
+        let pi_y = arena.pi(Multiplicity::Zero, v1, v3);
+        let pi_x = arena.pi(Multiplicity::One, v1, pi_y);
+        let pi_b = arena.pi(Multiplicity::Zero, u0, pi_x);
+        let const_ty = arena.pi(Multiplicity::Zero, u0, pi_b);
+
+        let valid_step1 = arena.lam(Multiplicity::Zero, v1);
+        let valid_step2 = arena.lam(Multiplicity::One, valid_step1);
+        let valid_step3 = arena.lam(Multiplicity::Zero, valid_step2);
+        let ret_x = arena.lam(Multiplicity::Zero, valid_step3);
+        assert_eq!(check_closed(&arena, ret_x, const_ty), Ok(()));
+
+        let wrong_step1 = arena.lam(Multiplicity::Zero, v0);
+        let wrong_step2 = arena.lam(Multiplicity::One, wrong_step1);
+        let wrong_step3 = arena.lam(Multiplicity::Zero, wrong_step2);
+        let ret_y = arena.lam(Multiplicity::Zero, wrong_step3);
+        assert_eq!(
+            check_closed(&arena, ret_y, const_ty),
+            Err(TypeError::TypeMismatch)
+        );
+
+        let f_ty = arena.pi(Multiplicity::One, u0, u0);
+        let p_ty = arena.sigma(Multiplicity::Zero, u0, u0);
+        let p_fst = arena.fst(v0);
+        let f_of_fst = arena.app(v1, p_fst);
+        let p_fst_shifted = arena.fst(v1);
+        let f_of_fst_shifted = arena.app(v2, p_fst_shifted);
+        let inner_id_pi = arena.pi(Multiplicity::One, f_of_fst, f_of_fst_shifted);
+        let take_p_pi = arena.pi(Multiplicity::Zero, p_ty, inner_id_pi);
+        let full_ty = arena.pi(Multiplicity::Zero, f_ty, take_p_pi);
+
+        let id_body = arena.lam(Multiplicity::One, v0);
+        let take_p = arena.lam(Multiplicity::Zero, id_body);
+        let take_f = arena.lam(Multiplicity::Zero, take_p);
+        assert_eq!(check_closed(&arena, take_f, full_ty), Ok(()));
+    }
 }

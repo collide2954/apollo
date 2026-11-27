@@ -1,3 +1,7 @@
+pub mod multiplicity;
+
+pub use multiplicity::{Multiplicity, UsageError, UsageVec};
+
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

@@ -27,6 +27,14 @@ Apollo supports macOS, Linux, and Windows.
 - `crates/apollo-cli`: Gives the `apollo` binary.
 - `xtask`: Runs cross-platform quality checks and documentation checks.
 
+## Usage
+
+Run the typechecker on the example prelude:
+
+```bash
+cargo run -p apollo-cli -- check examples/prelude.ap
+```
+
 ## Documentation
 
 All project documentation obeys ASD-STE100.

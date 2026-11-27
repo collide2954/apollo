@@ -5,6 +5,18 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-26
+
+### Added
+
+- Add source spans, lexer, AST, and parser for `.ap` modules in `apollo-syntax`.
+- Add surface-to-kernel elaboration with name resolution and line/column diagnostics in `apollo-elab`.
+- Add the `apollo check <file.ap>` command and `examples/prelude.ap` with kernel-checked proofs.
+
+### Changed
+
+- Add mutation test coverage for `coe`, `hcom`, and cofibration checks in `apollo-kernel`.
+
 ## [0.4.0] - 2026-11-26
 
 ### Added

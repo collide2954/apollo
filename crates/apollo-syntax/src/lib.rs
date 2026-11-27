@@ -1,3 +1,9 @@
+pub mod lexer;
+pub mod span;
+
+pub use lexer::{LexError, Token, TokenKind, lex};
+pub use span::{LineCol, Span, line_col};
+
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

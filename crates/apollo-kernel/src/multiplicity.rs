@@ -55,6 +55,15 @@ impl Multiplicity {
             | (Self::Many, Self::Zero | Self::One) => false,
         }
     }
+
+    #[must_use]
+    pub const fn join(self, rhs: Self) -> Self {
+        match (self, rhs) {
+            (Self::Zero, Self::Zero) => Self::Zero,
+            (Self::One, Self::One) => Self::One,
+            _ => Self::Many,
+        }
+    }
 }
 
 impl Add for Multiplicity {
@@ -219,6 +228,22 @@ impl UsageVec {
         Ok(Self { entries })
     }
 
+    pub fn join(&self, other: &Self) -> Result<Self, UsageError> {
+        if self.entries.len() != other.entries.len() {
+            return Err(UsageError::LengthMismatch {
+                expected: self.entries.len(),
+                actual: other.entries.len(),
+            });
+        }
+        let entries = self
+            .entries
+            .iter()
+            .zip(&other.entries)
+            .map(|(&lhs, &rhs)| lhs.join(rhs))
+            .collect();
+        Ok(Self { entries })
+    }
+
     pub fn check_against(&self, available: &[Multiplicity]) -> Result<(), UsageError> {
         if self.entries.len() != available.len() {
             return Err(UsageError::LengthMismatch {
@@ -334,6 +359,44 @@ mod tests {
         assert_eq!(Multiplicity::Zero.to_string(), "0");
         assert_eq!(Multiplicity::One.to_string(), "1");
         assert_eq!(Multiplicity::Many.to_string(), "ω");
+
+        assert_eq!(
+            Multiplicity::Zero.join(Multiplicity::Zero),
+            Multiplicity::Zero
+        );
+        assert_eq!(Multiplicity::One.join(Multiplicity::One), Multiplicity::One);
+        assert_eq!(
+            Multiplicity::Zero.join(Multiplicity::One),
+            Multiplicity::Many
+        );
+        assert_eq!(
+            Multiplicity::One.join(Multiplicity::Zero),
+            Multiplicity::Many
+        );
+        assert_eq!(
+            Multiplicity::Many.join(Multiplicity::One),
+            Multiplicity::Many
+        );
+
+        let j_lhs =
+            UsageVec::from_slice(&[Multiplicity::Zero, Multiplicity::One, Multiplicity::One]);
+        let j_rhs =
+            UsageVec::from_slice(&[Multiplicity::Zero, Multiplicity::One, Multiplicity::Zero]);
+        assert_eq!(
+            j_lhs.join(&j_rhs),
+            Ok(UsageVec::from_slice(&[
+                Multiplicity::Zero,
+                Multiplicity::One,
+                Multiplicity::Many,
+            ]))
+        );
+        assert_eq!(
+            j_lhs.join(&UsageVec::zero(1)),
+            Err(UsageError::LengthMismatch {
+                expected: 3,
+                actual: 1,
+            })
+        );
     }
 
     #[test]

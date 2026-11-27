@@ -175,6 +175,31 @@ impl Closure {
 }
 
 #[derive(Debug, Clone)]
+pub struct DoubleClosure {
+    env: Env,
+    body: TermId,
+}
+
+impl DoubleClosure {
+    #[must_use]
+    pub const fn new(env: Env, body: TermId) -> Self {
+        Self { env, body }
+    }
+
+    pub fn apply2(
+        &self,
+        arena: &TermArena,
+        first: Value,
+        second: Value,
+    ) -> Result<Value, EvalError> {
+        let mut next = self.env.clone();
+        next.push(first);
+        next.push(second);
+        eval(arena, &next, self.body)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Neutral {
     Var(DeBruijnLevel),
     App {
@@ -201,6 +226,27 @@ pub enum Neutral {
         dst: Dim,
         branches: Vec<(Cof, Closure)>,
         cap: Arc<Value>,
+    },
+    UnitElim {
+        motive: Closure,
+        on_unit: Arc<Value>,
+        scrut: Arc<Self>,
+    },
+    VoidElim {
+        motive: Closure,
+        scrut: Arc<Self>,
+    },
+    BoolElim {
+        motive: Closure,
+        on_true: Arc<Value>,
+        on_false: Arc<Value>,
+        scrut: Arc<Self>,
+    },
+    NatElim {
+        motive: Closure,
+        base: Arc<Value>,
+        step: DoubleClosure,
+        scrut: Arc<Self>,
     },
 }
 
@@ -233,6 +279,15 @@ pub enum Value {
         right: Arc<Self>,
     },
     PLam(Closure),
+    Unit,
+    Tt,
+    Void,
+    Bool,
+    True,
+    False,
+    Nat,
+    Zero,
+    Succ(Arc<Self>),
     Neutral(Arc<Neutral>),
 }
 
@@ -315,19 +370,6 @@ pub fn eval(arena: &TermArena, env: &[Value], id: TermId) -> Result<Value, EvalE
         Term::Interval => Ok(Value::Interval),
         Term::DimZero => Ok(Value::Dim(Dim::Zero)),
         Term::DimOne => Ok(Value::Dim(Dim::One)),
-        Term::Path {
-            family,
-            left,
-            right,
-        } => {
-            let left_val = eval(arena, env, *left)?;
-            let right_val = eval(arena, env, *right)?;
-            Ok(Value::Path {
-                family: Closure::new(env.to_vec(), *family),
-                left: Arc::new(left_val),
-                right: Arc::new(right_val),
-            })
-        }
         Term::PLam(body) => Ok(Value::PLam(Closure::new(env.to_vec(), *body))),
         Term::PApp {
             path,
@@ -348,6 +390,124 @@ pub fn eval(arena: &TermArena, env: &[Value], id: TermId) -> Result<Value, EvalE
             branches,
             cap,
         } => eval_hcom(arena, env, *ty, *src, *dst, branches, *cap),
+        other => eval_inductive(arena, env, id, other),
+    }
+}
+
+fn eval_inductive(
+    arena: &TermArena,
+    env: &[Value],
+    id: TermId,
+    term: &Term,
+) -> Result<Value, EvalError> {
+    match term {
+        Term::Path {
+            family,
+            left,
+            right,
+        } => {
+            let left_val = eval(arena, env, *left)?;
+            let right_val = eval(arena, env, *right)?;
+            Ok(Value::Path {
+                family: Closure::new(env.to_vec(), *family),
+                left: Arc::new(left_val),
+                right: Arc::new(right_val),
+            })
+        }
+        Term::Unit => Ok(Value::Unit),
+        Term::Tt => Ok(Value::Tt),
+        Term::UnitElim {
+            motive,
+            on_unit,
+            scrut,
+        } => {
+            let scrut_val = eval(arena, env, *scrut)?;
+            let on_unit_val = eval(arena, env, *on_unit)?;
+            match scrut_val {
+                Value::Neutral(neutral) => Ok(Value::Neutral(Arc::new(Neutral::UnitElim {
+                    motive: Closure::new(env.to_vec(), *motive),
+                    on_unit: Arc::new(on_unit_val),
+                    scrut: neutral,
+                }))),
+                _ => Ok(on_unit_val),
+            }
+        }
+        Term::Void => Ok(Value::Void),
+        Term::VoidElim { motive, scrut } => {
+            let scrut_val = eval(arena, env, *scrut)?;
+            match scrut_val {
+                Value::Neutral(neutral) => Ok(Value::Neutral(Arc::new(Neutral::VoidElim {
+                    motive: Closure::new(env.to_vec(), *motive),
+                    scrut: neutral,
+                }))),
+                other => Ok(other),
+            }
+        }
+        Term::Bool => Ok(Value::Bool),
+        Term::True => Ok(Value::True),
+        Term::False => Ok(Value::False),
+        Term::BoolElim {
+            motive,
+            on_true,
+            on_false,
+            scrut,
+        } => {
+            let scrut_val = eval(arena, env, *scrut)?;
+            match scrut_val {
+                Value::True => eval(arena, env, *on_true),
+                Value::False => eval(arena, env, *on_false),
+                Value::Neutral(neutral) => {
+                    let true_val = eval(arena, env, *on_true)?;
+                    let false_val = eval(arena, env, *on_false)?;
+                    Ok(Value::Neutral(Arc::new(Neutral::BoolElim {
+                        motive: Closure::new(env.to_vec(), *motive),
+                        on_true: Arc::new(true_val),
+                        on_false: Arc::new(false_val),
+                        scrut: neutral,
+                    })))
+                }
+                other => Ok(other),
+            }
+        }
+        Term::Nat => Ok(Value::Nat),
+        Term::Zero => Ok(Value::Zero),
+        Term::Succ(pred) => Ok(Value::Succ(Arc::new(eval(arena, env, *pred)?))),
+        Term::NatElim {
+            motive,
+            base,
+            step,
+            scrut,
+        } => {
+            let scrut_val = eval(arena, env, *scrut)?;
+            let base_val = eval(arena, env, *base)?;
+            let motive_cl = Closure::new(env.to_vec(), *motive);
+            let step_cl = DoubleClosure::new(env.to_vec(), *step);
+            eval_nat_elim(arena, &motive_cl, &base_val, &step_cl, scrut_val)
+        }
+        _ => Err(EvalError::InvalidTermId(id)),
+    }
+}
+
+fn eval_nat_elim(
+    arena: &TermArena,
+    motive: &Closure,
+    base: &Value,
+    step: &DoubleClosure,
+    scrut: Value,
+) -> Result<Value, EvalError> {
+    match scrut {
+        Value::Zero => Ok(base.clone()),
+        Value::Succ(pred) => {
+            let ih = eval_nat_elim(arena, motive, base, step, (*pred).clone())?;
+            step.apply2(arena, (*pred).clone(), ih)
+        }
+        Value::Neutral(neutral) => Ok(Value::Neutral(Arc::new(Neutral::NatElim {
+            motive: motive.clone(),
+            base: Arc::new(base.clone()),
+            step: step.clone(),
+            scrut: neutral,
+        }))),
+        other => Ok(other),
     }
 }
 
@@ -419,6 +579,7 @@ pub fn hcom_val(
         }
     }
     match ty {
+        Value::Unit => Ok(Value::Tt),
         Value::Pi { mult, codomain, .. } => Ok(Value::Lam {
             mult: *mult,
             body: Closure::HComPi {
@@ -484,7 +645,7 @@ pub fn coe_line(
     }
     let probe = Dim::Var(DimVar(u32::MAX));
     match line.apply(arena, probe)? {
-        Value::Universe(_) => Ok(term),
+        Value::Universe(_) | Value::Unit | Value::Void | Value::Bool | Value::Nat => Ok(term),
         Value::Pi { mult, .. } => Ok(Value::Lam {
             mult,
             body: Closure::CoePi {
@@ -634,6 +795,18 @@ pub fn quote(arena: &mut TermArena, depth: u32, value: &Value) -> Result<TermId,
             let body_id = quote(arena, depth + 1, &body_val)?;
             Ok(arena.plam(body_id))
         }
+        Value::Unit => Ok(arena.unit()),
+        Value::Tt => Ok(arena.tt()),
+        Value::Void => Ok(arena.void()),
+        Value::Bool => Ok(arena.bool_ty()),
+        Value::True => Ok(arena.bool_true()),
+        Value::False => Ok(arena.bool_false()),
+        Value::Nat => Ok(arena.nat()),
+        Value::Zero => Ok(arena.zero()),
+        Value::Succ(pred) => {
+            let pred_id = quote(arena, depth, pred)?;
+            Ok(arena.succ(pred_id))
+        }
         Value::Neutral(neutral) => quote_neutral(arena, depth, neutral),
     }
 }
@@ -709,6 +882,63 @@ fn quote_neutral(
             let cap_id = quote(arena, depth, cap)?;
             Ok(arena.hcom(ty_id, src_id, dst_id, quoted_branches, cap_id))
         }
+        other => quote_neutral_inductive(arena, depth, other),
+    }
+}
+
+fn quote_neutral_inductive(
+    arena: &mut TermArena,
+    depth: u32,
+    neutral: &Neutral,
+) -> Result<TermId, EvalError> {
+    match neutral {
+        Neutral::UnitElim {
+            motive,
+            on_unit,
+            scrut,
+        } => {
+            let m_val = motive.apply(arena, Value::var(DeBruijnLevel(depth)))?;
+            let m_id = quote(arena, depth + 1, &m_val)?;
+            let on_unit_id = quote(arena, depth, on_unit)?;
+            let scrut_id = quote_neutral(arena, depth, scrut)?;
+            Ok(arena.unit_elim(m_id, on_unit_id, scrut_id))
+        }
+        Neutral::VoidElim { motive, scrut } => {
+            let m_val = motive.apply(arena, Value::var(DeBruijnLevel(depth)))?;
+            let m_id = quote(arena, depth + 1, &m_val)?;
+            let scrut_id = quote_neutral(arena, depth, scrut)?;
+            Ok(arena.void_elim(m_id, scrut_id))
+        }
+        Neutral::BoolElim {
+            motive,
+            on_true,
+            on_false,
+            scrut,
+        } => {
+            let m_val = motive.apply(arena, Value::var(DeBruijnLevel(depth)))?;
+            let m_id = quote(arena, depth + 1, &m_val)?;
+            let true_id = quote(arena, depth, on_true)?;
+            let false_id = quote(arena, depth, on_false)?;
+            let scrut_id = quote_neutral(arena, depth, scrut)?;
+            Ok(arena.bool_elim(m_id, true_id, false_id, scrut_id))
+        }
+        Neutral::NatElim {
+            motive,
+            base,
+            step,
+            scrut,
+        } => {
+            let m_val = motive.apply(arena, Value::var(DeBruijnLevel(depth)))?;
+            let m_id = quote(arena, depth + 1, &m_val)?;
+            let base_id = quote(arena, depth, base)?;
+            let k_var = Value::var(DeBruijnLevel(depth));
+            let ih_var = Value::var(DeBruijnLevel(depth + 1));
+            let step_val = step.apply2(arena, k_var, ih_var)?;
+            let step_id = quote(arena, depth + 2, &step_val)?;
+            let scrut_id = quote_neutral(arena, depth, scrut)?;
+            Ok(arena.nat_elim(m_id, base_id, step_id, scrut_id))
+        }
+        _ => Ok(arena.tt()),
     }
 }
 
@@ -809,7 +1039,15 @@ pub fn conv(arena: &TermArena, depth: u32, lhs: &Value, rhs: &Value) -> Result<b
             Ok(conv(arena, depth, first, &proj_fst(other))?
                 && conv(arena, depth, second, &proj_snd(other))?)
         }
-        (Value::Interval, Value::Interval) => Ok(true),
+        (Value::Interval, Value::Interval)
+        | (Value::Unit, Value::Unit)
+        | (Value::Tt, Value::Tt)
+        | (Value::Void, Value::Void)
+        | (Value::Bool, Value::Bool)
+        | (Value::True, Value::True)
+        | (Value::False, Value::False)
+        | (Value::Nat, Value::Nat)
+        | (Value::Zero, Value::Zero) => Ok(true),
         (Value::Dim(d1), Value::Dim(d2)) => Ok(d1 == d2),
         (
             Value::Path {
@@ -831,6 +1069,7 @@ pub fn conv(arena: &TermArena, depth: u32, lhs: &Value, rhs: &Value) -> Result<b
         (Value::PLam(b1), Value::PLam(b2)) => {
             conv_closures(arena, depth, Value::dim_var(depth), b1, b2)
         }
+        (Value::Succ(p1), Value::Succ(p2)) => conv(arena, depth, p1, p2),
         (Value::Neutral(n1), Value::Neutral(n2)) => conv_neutral(arena, depth, n1, n2),
         _ => Ok(false),
     }
@@ -912,6 +1151,85 @@ fn conv_neutral(
                 }
             }
             Ok(true)
+        }
+        other => conv_neutral_inductive(arena, depth, other.0, other.1),
+    }
+}
+
+fn conv_neutral_inductive(
+    arena: &TermArena,
+    depth: u32,
+    lhs: &Neutral,
+    rhs: &Neutral,
+) -> Result<bool, EvalError> {
+    match (lhs, rhs) {
+        (
+            Neutral::UnitElim {
+                motive: m1,
+                on_unit: u1,
+                scrut: s1,
+            },
+            Neutral::UnitElim {
+                motive: m2,
+                on_unit: u2,
+                scrut: s2,
+            },
+        ) => Ok(conv_neutral(arena, depth, s1, s2)?
+            && conv(arena, depth, u1, u2)?
+            && conv_closures(arena, depth, Value::var(DeBruijnLevel(depth)), m1, m2)?),
+        (
+            Neutral::VoidElim {
+                motive: m1,
+                scrut: s1,
+            },
+            Neutral::VoidElim {
+                motive: m2,
+                scrut: s2,
+            },
+        ) => Ok(conv_neutral(arena, depth, s1, s2)?
+            && conv_closures(arena, depth, Value::var(DeBruijnLevel(depth)), m1, m2)?),
+        (
+            Neutral::BoolElim {
+                motive: m1,
+                on_true: t1,
+                on_false: f1,
+                scrut: s1,
+            },
+            Neutral::BoolElim {
+                motive: m2,
+                on_true: t2,
+                on_false: f2,
+                scrut: s2,
+            },
+        ) => Ok(conv_neutral(arena, depth, s1, s2)?
+            && conv(arena, depth, t1, t2)?
+            && conv(arena, depth, f1, f2)?
+            && conv_closures(arena, depth, Value::var(DeBruijnLevel(depth)), m1, m2)?),
+        (
+            Neutral::NatElim {
+                motive: m1,
+                base: b1,
+                step: st1,
+                scrut: s1,
+            },
+            Neutral::NatElim {
+                motive: m2,
+                base: b2,
+                step: st2,
+                scrut: s2,
+            },
+        ) => {
+            if !conv_neutral(arena, depth, s1, s2)?
+                || !conv(arena, depth, b1, b2)?
+                || !conv_closures(arena, depth, Value::var(DeBruijnLevel(depth)), m1, m2)?
+            {
+                return Ok(false);
+            }
+            let k_var = Value::var(DeBruijnLevel(depth));
+            let ih_var = Value::var(DeBruijnLevel(depth + 1));
+            let v1 = st1.apply2(arena, k_var.clone(), ih_var.clone())?;
+            let v2 = st2.apply2(arena, k_var, ih_var)?;
+            conv(arena, depth + 2, &v1, &v2)
         }
         _ => Ok(false),
     }
@@ -1580,6 +1898,84 @@ mod tests {
             assert_eq!(conv(&arena, 2, &val_inner, &val_inner), Ok(true));
             assert_eq!(conv(&arena, 2, &val_inner, &val_mid), Ok(false));
             assert_eq!(conv(&arena, 2, &val_inner, &val_outer), Ok(false));
+        }
+    }
+
+    #[test]
+    fn evaluates_quotes_and_converts_inductive_types_and_discrete_kan() {
+        let mut arena = TermArena::new();
+        let unit = arena.unit();
+        let tt = arena.tt();
+        let void = arena.void();
+        let bool_ty = arena.bool_ty();
+        let b_true = arena.bool_true();
+        let b_false = arena.bool_false();
+        let nat = arena.nat();
+        let zero = arena.zero();
+        let one = arena.succ(zero);
+        let two = arena.succ(one);
+        let three = arena.succ(two);
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+
+        let succ_v0 = arena.succ(v0);
+        let succ_v1 = arena.succ(v1);
+        let add_two_one = arena.nat_elim(nat, one, succ_v0, two);
+        assert_eq!(
+            eval(&arena, &[], add_two_one).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(three)
+        );
+
+        let bool_t = arena.bool_elim(bool_ty, b_false, b_true, b_true);
+        let bool_f = arena.bool_elim(bool_ty, b_false, b_true, b_false);
+        assert_eq!(
+            eval(&arena, &[], bool_t).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(b_false)
+        );
+        assert_eq!(
+            eval(&arena, &[], bool_f).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(b_true)
+        );
+
+        let unit_r = arena.unit_elim(bool_ty, b_true, tt);
+        assert_eq!(
+            eval(&arena, &[], unit_r).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(b_true)
+        );
+
+        for (ty, val) in [(unit, tt), (bool_ty, b_true), (nat, two), (void, v0)] {
+            let env = vec![Value::var(DeBruijnLevel(0))];
+            let coerced = arena.coe(ty, d0, d1, val);
+            assert_eq!(
+                eval(&arena, &env, coerced).and_then(|v| quote(&mut arena, 1, &v)),
+                Ok(val)
+            );
+        }
+
+        let unit_hcom = arena.hcom(unit, d0, d1, vec![], tt);
+        assert_eq!(
+            eval(&arena, &[], unit_hcom).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(tt)
+        );
+
+        let env = vec![Value::var(DeBruijnLevel(0))];
+        let n_unit = arena.unit_elim(bool_ty, b_true, v0);
+        let n_void = arena.void_elim(bool_ty, v0);
+        let n_bool = arena.bool_elim(bool_ty, b_false, b_true, v0);
+        let n_nat_a = arena.nat_elim(nat, zero, succ_v0, v0);
+        let n_nat_b = arena.nat_elim(nat, zero, succ_v1, v0);
+        for term in [n_unit, n_void, n_bool, n_nat_a] {
+            let val = eval(&arena, &env, term);
+            assert!(val.is_ok());
+            if let Ok(v) = val {
+                assert_eq!(quote(&mut arena, 1, &v), Ok(term));
+                assert_eq!(conv(&arena, 1, &v, &v), Ok(true));
+            }
+        }
+        if let (Ok(va), Ok(vb)) = (eval(&arena, &env, n_nat_a), eval(&arena, &env, n_nat_b)) {
+            assert_eq!(conv(&arena, 1, &va, &vb), Ok(false));
         }
     }
 }

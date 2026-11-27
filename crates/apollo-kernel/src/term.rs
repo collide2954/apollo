@@ -112,6 +112,36 @@ pub enum Term {
         branches: Vec<(CofTerm, TermId)>,
         cap: TermId,
     },
+    Unit,
+    Tt,
+    UnitElim {
+        motive: TermId,
+        on_unit: TermId,
+        scrut: TermId,
+    },
+    Void,
+    VoidElim {
+        motive: TermId,
+        scrut: TermId,
+    },
+    Bool,
+    True,
+    False,
+    BoolElim {
+        motive: TermId,
+        on_true: TermId,
+        on_false: TermId,
+        scrut: TermId,
+    },
+    Nat,
+    Zero,
+    Succ(TermId),
+    NatElim {
+        motive: TermId,
+        base: TermId,
+        step: TermId,
+        scrut: TermId,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -279,6 +309,97 @@ impl TermArena {
     }
 
     #[must_use]
+    pub fn unit(&mut self) -> TermId {
+        self.intern(Term::Unit)
+    }
+
+    #[must_use]
+    pub fn tt(&mut self) -> TermId {
+        self.intern(Term::Tt)
+    }
+
+    #[must_use]
+    pub fn unit_elim(&mut self, motive: TermId, on_unit: TermId, scrut: TermId) -> TermId {
+        self.intern(Term::UnitElim {
+            motive,
+            on_unit,
+            scrut,
+        })
+    }
+
+    #[must_use]
+    pub fn void(&mut self) -> TermId {
+        self.intern(Term::Void)
+    }
+
+    #[must_use]
+    pub fn void_elim(&mut self, motive: TermId, scrut: TermId) -> TermId {
+        self.intern(Term::VoidElim { motive, scrut })
+    }
+
+    #[must_use]
+    pub fn bool_ty(&mut self) -> TermId {
+        self.intern(Term::Bool)
+    }
+
+    #[must_use]
+    pub fn bool_true(&mut self) -> TermId {
+        self.intern(Term::True)
+    }
+
+    #[must_use]
+    pub fn bool_false(&mut self) -> TermId {
+        self.intern(Term::False)
+    }
+
+    #[must_use]
+    pub fn bool_elim(
+        &mut self,
+        motive: TermId,
+        on_true: TermId,
+        on_false: TermId,
+        scrut: TermId,
+    ) -> TermId {
+        self.intern(Term::BoolElim {
+            motive,
+            on_true,
+            on_false,
+            scrut,
+        })
+    }
+
+    #[must_use]
+    pub fn nat(&mut self) -> TermId {
+        self.intern(Term::Nat)
+    }
+
+    #[must_use]
+    pub fn zero(&mut self) -> TermId {
+        self.intern(Term::Zero)
+    }
+
+    #[must_use]
+    pub fn succ(&mut self, pred: TermId) -> TermId {
+        self.intern(Term::Succ(pred))
+    }
+
+    #[must_use]
+    pub fn nat_elim(
+        &mut self,
+        motive: TermId,
+        base: TermId,
+        step: TermId,
+        scrut: TermId,
+    ) -> TermId {
+        self.intern(Term::NatElim {
+            motive,
+            base,
+            step,
+            scrut,
+        })
+    }
+
+    #[must_use]
     pub fn format_cof(&self, cof: &CofTerm) -> String {
         match cof {
             CofTerm::Top => "⊤".to_owned(),
@@ -388,6 +509,61 @@ impl TermArena {
                     self.format_term(*cap)
                 )
             }
+            other => self.format_inductive(other),
+        }
+    }
+
+    fn format_inductive(&self, term: &Term) -> String {
+        match term {
+            Term::Unit => "Unit".to_owned(),
+            Term::Tt => "()".to_owned(),
+            Term::UnitElim {
+                motive,
+                on_unit,
+                scrut,
+            } => format!(
+                "unit_elim({}, {}, {})",
+                self.format_term(*motive),
+                self.format_term(*on_unit),
+                self.format_term(*scrut)
+            ),
+            Term::Void => "Void".to_owned(),
+            Term::VoidElim { motive, scrut } => format!(
+                "void_elim({}, {})",
+                self.format_term(*motive),
+                self.format_term(*scrut)
+            ),
+            Term::Bool => "Bool".to_owned(),
+            Term::True => "true".to_owned(),
+            Term::False => "false".to_owned(),
+            Term::BoolElim {
+                motive,
+                on_true,
+                on_false,
+                scrut,
+            } => format!(
+                "bool_elim({}, {}, {}, {})",
+                self.format_term(*motive),
+                self.format_term(*on_true),
+                self.format_term(*on_false),
+                self.format_term(*scrut)
+            ),
+            Term::Nat => "Nat".to_owned(),
+            Term::Zero => "zero".to_owned(),
+            Term::Succ(pred) => format!("succ({})", self.format_term(*pred)),
+            Term::NatElim {
+                motive,
+                base,
+                step,
+                scrut,
+            } => format!(
+                "nat_elim({}, {}, {}, {})",
+                self.format_term(*motive),
+                self.format_term(*base),
+                self.format_term(*step),
+                self.format_term(*scrut)
+            ),
+            _ => String::new(),
         }
     }
 }
@@ -482,5 +658,38 @@ mod tests {
             "hcom(Type 0, 0 -> 1, [((⊤ ∧ (0 = 1)) ∨ ⊥) => #0], #0)"
         );
         assert_eq!(arena.format_term(TermId(999)), "<invalid:999>");
+
+        let unit = arena.unit();
+        let tt = arena.tt();
+        let unit_elim = arena.unit_elim(u0, tt, tt);
+        let void = arena.void();
+        let void_elim = arena.void_elim(u0, x);
+        let bool_ty = arena.bool_ty();
+        let b_true = arena.bool_true();
+        let b_false = arena.bool_false();
+        let bool_elim = arena.bool_elim(u0, b_true, b_false, b_true);
+        let nat = arena.nat();
+        let zero = arena.zero();
+        let one = arena.succ(zero);
+        let nat_elim = arena.nat_elim(u0, zero, one, one);
+        assert_eq!(arena.format_term(unit), "Unit");
+        assert_eq!(arena.format_term(tt), "()");
+        assert_eq!(arena.format_term(unit_elim), "unit_elim(Type 0, (), ())");
+        assert_eq!(arena.format_term(void), "Void");
+        assert_eq!(arena.format_term(void_elim), "void_elim(Type 0, #0)");
+        assert_eq!(arena.format_term(bool_ty), "Bool");
+        assert_eq!(arena.format_term(b_true), "true");
+        assert_eq!(arena.format_term(b_false), "false");
+        assert_eq!(
+            arena.format_term(bool_elim),
+            "bool_elim(Type 0, true, false, true)"
+        );
+        assert_eq!(arena.format_term(nat), "Nat");
+        assert_eq!(arena.format_term(zero), "zero");
+        assert_eq!(arena.format_term(one), "succ(zero)");
+        assert_eq!(
+            arena.format_term(nat_elim),
+            "nat_elim(Type 0, zero, succ(zero), succ(zero))"
+        );
     }
 }

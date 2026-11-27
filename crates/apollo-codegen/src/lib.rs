@@ -368,11 +368,24 @@ impl<'a> DeclLowerer<'a> {
                     decl: self.decl_name.clone(),
                 })
             }
-            Term::Universe(_) | Term::Pi { .. } | Term::Sigma { .. } => {
-                Err(CodegenError::UnsupportedExpr {
-                    decl: self.decl_name.clone(),
-                })
-            }
+            Term::Universe(_)
+            | Term::Pi { .. }
+            | Term::Sigma { .. }
+            | Term::Unit
+            | Term::Tt
+            | Term::UnitElim { .. }
+            | Term::Void
+            | Term::VoidElim { .. }
+            | Term::Bool
+            | Term::True
+            | Term::False
+            | Term::BoolElim { .. }
+            | Term::Nat
+            | Term::Zero
+            | Term::Succ(_)
+            | Term::NatElim { .. } => Err(CodegenError::UnsupportedExpr {
+                decl: self.decl_name.clone(),
+            }),
         }
     }
 

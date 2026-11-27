@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use crate::cubical::{Cof, Dim, Face};
 use crate::level::Level;
@@ -344,6 +345,104 @@ fn infer_hcom(
     Ok((ty_val, usage))
 }
 
+fn check_motive(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    dom: Value,
+    motive: TermId,
+) -> Result<Closure, TypeError> {
+    let _ = ctx.push(dom);
+    let res = check_is_type(arena, ctx, motive);
+    ctx.pop();
+    let _ = res?;
+    Ok(Closure::new(ctx.env.clone(), motive))
+}
+
+fn infer_unit_elim(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    motive: TermId,
+    on_unit: TermId,
+    scrut: TermId,
+) -> Result<(Value, UsageVec), TypeError> {
+    let motive_cl = check_motive(arena, ctx, Value::Unit, motive)?;
+    let u_scrut = check(arena, ctx, mode, scrut, &Value::Unit)?;
+    let unit_ty = motive_cl.apply(arena, Value::Tt)?;
+    let u_unit = check(arena, ctx, mode, on_unit, &unit_ty)?;
+    let scrut_val = eval(arena, &ctx.env, scrut)?;
+    let res_ty = motive_cl.apply(arena, scrut_val)?;
+    Ok((res_ty, u_scrut.add(&u_unit)?))
+}
+
+fn infer_void_elim(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    motive: TermId,
+    scrut: TermId,
+) -> Result<(Value, UsageVec), TypeError> {
+    let motive_cl = check_motive(arena, ctx, Value::Void, motive)?;
+    let u_scrut = check(arena, ctx, mode, scrut, &Value::Void)?;
+    let scrut_val = eval(arena, &ctx.env, scrut)?;
+    let res_ty = motive_cl.apply(arena, scrut_val)?;
+    Ok((res_ty, u_scrut))
+}
+
+fn infer_bool_elim(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    motive: TermId,
+    on_true: TermId,
+    on_false: TermId,
+    scrut: TermId,
+) -> Result<(Value, UsageVec), TypeError> {
+    let motive_cl = check_motive(arena, ctx, Value::Bool, motive)?;
+    let u_scrut = check(arena, ctx, mode, scrut, &Value::Bool)?;
+    let true_ty = motive_cl.apply(arena, Value::True)?;
+    let u_true = check(arena, ctx, mode, on_true, &true_ty)?;
+    let false_ty = motive_cl.apply(arena, Value::False)?;
+    let u_false = check(arena, ctx, mode, on_false, &false_ty)?;
+    let u_branches = u_true.join(&u_false)?;
+    let scrut_val = eval(arena, &ctx.env, scrut)?;
+    let res_ty = motive_cl.apply(arena, scrut_val)?;
+    Ok((res_ty, u_scrut.add(&u_branches)?))
+}
+
+fn infer_nat_elim(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    motive: TermId,
+    base: TermId,
+    step: TermId,
+    scrut: TermId,
+) -> Result<(Value, UsageVec), TypeError> {
+    let motive_cl = check_motive(arena, ctx, Value::Nat, motive)?;
+    let u_scrut = check(arena, ctx, mode, scrut, &Value::Nat)?;
+    let base_ty = motive_cl.apply(arena, Value::Zero)?;
+    let u_base = check(arena, ctx, mode, base, &base_ty)?;
+
+    let k_var = ctx.push(Value::Nat);
+    let ih_ty = motive_cl.apply(arena, k_var.clone())?;
+    let succ_ty = motive_cl.apply(arena, Value::Succ(Arc::new(k_var)))?;
+    let _ = ctx.push(ih_ty);
+    let step_res = check(arena, ctx, mode, step, &succ_ty);
+    ctx.pop();
+    ctx.pop();
+    let mut u_step = step_res?;
+    let _ = u_step.pop_last();
+    let _ = u_step.pop_last();
+
+    let total = u_scrut
+        .add(&u_base)?
+        .add(&u_step.scale(Multiplicity::Many))?;
+    let scrut_val = eval(arena, &ctx.env, scrut)?;
+    let res_ty = motive_cl.apply(arena, scrut_val)?;
+    Ok((res_ty, total))
+}
+
 pub fn infer(
     arena: &TermArena,
     ctx: &mut Ctx,
@@ -439,6 +538,47 @@ pub fn infer(
         Term::Lam { .. } => Err(TypeError::CannotInferLambda),
         Term::Pair { .. } => Err(TypeError::CannotInferPair),
         Term::PLam(_) => Err(TypeError::CannotInferPathLambda),
+        other => infer_inductive(arena, ctx, mode, depth, other),
+    }
+}
+
+fn infer_inductive(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    depth: usize,
+    term: &Term,
+) -> Result<(Value, UsageVec), TypeError> {
+    match term {
+        Term::Unit | Term::Void | Term::Bool | Term::Nat => {
+            Ok((Value::Universe(Level::zero()), UsageVec::zero(depth)))
+        }
+        Term::Tt => Ok((Value::Unit, UsageVec::zero(depth))),
+        Term::UnitElim {
+            motive,
+            on_unit,
+            scrut,
+        } => infer_unit_elim(arena, ctx, mode, *motive, *on_unit, *scrut),
+        Term::VoidElim { motive, scrut } => infer_void_elim(arena, ctx, mode, *motive, *scrut),
+        Term::True | Term::False => Ok((Value::Bool, UsageVec::zero(depth))),
+        Term::BoolElim {
+            motive,
+            on_true,
+            on_false,
+            scrut,
+        } => infer_bool_elim(arena, ctx, mode, *motive, *on_true, *on_false, *scrut),
+        Term::Zero => Ok((Value::Nat, UsageVec::zero(depth))),
+        Term::Succ(pred) => {
+            let u_pred = check(arena, ctx, mode, *pred, &Value::Nat)?;
+            Ok((Value::Nat, u_pred))
+        }
+        Term::NatElim {
+            motive,
+            base,
+            step,
+            scrut,
+        } => infer_nat_elim(arena, ctx, mode, *motive, *base, *step, *scrut),
+        _ => Err(TypeError::TypeMismatch),
     }
 }
 
@@ -524,7 +664,12 @@ pub fn check(
             Ok(UsageVec::zero(ctx.types.len()))
         }
         _ => {
-            let (actual, usage) = infer(arena, ctx, mode, id)?;
+            let check_mode = if matches!(expected, Value::Path { .. }) {
+                Multiplicity::Zero
+            } else {
+                mode
+            };
+            let (actual, usage) = infer(arena, ctx, check_mode, id)?;
             if subtype(arena, ctx.depth(), &actual, expected)? {
                 Ok(usage)
             } else {
@@ -1252,5 +1397,141 @@ mod tests {
             check_closed(&arena, overlap_outer_expr, outer_ty),
             Err(TypeError::HComBoundaryMismatch)
         );
+    }
+
+    #[test]
+    fn checks_unit_void_and_bool_proofs_with_qtt_branches() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let unit = arena.unit();
+        let tt = arena.tt();
+        let void = arena.void();
+        let bool_ty = arena.bool_ty();
+        let b_true = arena.bool_true();
+        let b_false = arena.bool_false();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+        let v4 = arena.var(Index(4));
+
+        let absurd_inner = arena.pi(Multiplicity::One, void, v1);
+        let absurd_ty = arena.pi(Multiplicity::Zero, u0, absurd_inner);
+        let absurd_elim = arena.void_elim(v2, v0);
+        let absurd_lam = arena.lam(Multiplicity::One, absurd_elim);
+        let absurd_body = arena.lam(Multiplicity::Zero, absurd_lam);
+        assert_eq!(check_closed(&arena, absurd_body, absurd_ty), Ok(()));
+
+        let unit_id_ty = arena.pi(Multiplicity::One, unit, unit);
+        let unit_elim = arena.unit_elim(unit, tt, v0);
+        let unit_id = arena.lam(Multiplicity::One, unit_elim);
+        assert_eq!(check_closed(&arena, unit_id, unit_id_ty), Ok(()));
+
+        let not_ty = arena.pi(Multiplicity::One, bool_ty, bool_ty);
+        let not_elim = arena.bool_elim(bool_ty, b_false, b_true, v0);
+        let not_body = arena.lam(Multiplicity::One, not_elim);
+        assert_eq!(check_closed(&arena, not_body, not_ty), Ok(()));
+
+        let erased_bool_ty = arena.pi(Multiplicity::Zero, bool_ty, bool_ty);
+        let erased_bool_body = arena.lam(Multiplicity::Zero, not_elim);
+        assert_eq!(
+            check_closed(&arena, erased_bool_body, erased_bool_ty),
+            Err(TypeError::BinderUsageViolation {
+                used: Multiplicity::One,
+                expected: Multiplicity::Zero,
+            })
+        );
+
+        let not_ann = arena.ann(not_body, not_ty);
+        let not_b = arena.app(not_ann, v0);
+        let not_not_b = arena.app(not_ann, not_b);
+        let not_not_path = arena.path(bool_ty, not_not_b, v0);
+        let not_not_ty = arena.pi(Multiplicity::Zero, bool_ty, not_not_path);
+        let refl_true = arena.plam(b_true);
+        let refl_false = arena.plam(b_false);
+        let not_not_elim = arena.bool_elim(not_not_path, refl_true, refl_false, v0);
+        let not_not_body = arena.lam(Multiplicity::Zero, not_not_elim);
+        assert_eq!(check_closed(&arena, not_not_body, not_not_ty), Ok(()));
+
+        let choose_c = arena.pi(Multiplicity::One, bool_ty, v2);
+        let choose_b = arena.pi(Multiplicity::One, v0, choose_c);
+        let choose_ty = arena.pi(Multiplicity::Zero, u0, choose_b);
+        let ok_elim = arena.bool_elim(v3, v1, v1, v0);
+        let ok_l2 = arena.lam(Multiplicity::One, ok_elim);
+        let ok_l1 = arena.lam(Multiplicity::One, ok_l2);
+        let ok_branch = arena.lam(Multiplicity::Zero, ok_l1);
+        assert_eq!(check_closed(&arena, ok_branch, choose_ty), Ok(()));
+
+        let bad_d = arena.pi(Multiplicity::One, bool_ty, v3);
+        let bad_c = arena.pi(Multiplicity::Many, v1, bad_d);
+        let bad_b = arena.pi(Multiplicity::One, v0, bad_c);
+        let bad_branch_ty = arena.pi(Multiplicity::Zero, u0, bad_b);
+        let bad_elim = arena.bool_elim(v4, v2, v1, v0);
+        let bad_l3 = arena.lam(Multiplicity::One, bad_elim);
+        let bad_l2 = arena.lam(Multiplicity::Many, bad_l3);
+        let bad_l1 = arena.lam(Multiplicity::One, bad_l2);
+        let bad_branch = arena.lam(Multiplicity::Zero, bad_l1);
+        assert_eq!(
+            check_closed(&arena, bad_branch, bad_branch_ty),
+            Err(TypeError::BinderUsageViolation {
+                used: Multiplicity::Many,
+                expected: Multiplicity::One,
+            })
+        );
+    }
+
+    #[test]
+    fn checks_nat_arithmetic_and_cubical_induction_proofs() {
+        let mut arena = TermArena::new();
+        let nat = arena.nat();
+        let zero = arena.zero();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+
+        let add_inner_ty = arena.pi(Multiplicity::One, nat, nat);
+        let add_ty = arena.pi(Multiplicity::One, nat, add_inner_ty);
+        let succ_v0 = arena.succ(v0);
+        let add_elim = arena.nat_elim(nat, v0, succ_v0, v1);
+        let add_inner_lam = arena.lam(Multiplicity::One, add_elim);
+        let add_body = arena.lam(Multiplicity::One, add_inner_lam);
+        assert_eq!(check_closed(&arena, add_body, add_ty), Ok(()));
+
+        let add_ann = arena.ann(add_body, add_ty);
+        let add_applied_n = arena.app(add_ann, v0);
+        let add_n_zero = arena.app(add_applied_n, zero);
+        let add_zero_path = arena.path(nat, add_n_zero, v0);
+        let add_zero_ty = arena.pi(Multiplicity::Zero, nat, add_zero_path);
+        let add_applied_k = arena.app(add_ann, v2);
+        let step_lhs = arena.app(add_applied_k, zero);
+        let ih_at_i = arena.papp(v1, step_lhs, v2, v0);
+        let succ_ih = arena.succ(ih_at_i);
+        let step_proof = arena.plam(succ_ih);
+        let base_proof = arena.plam(zero);
+        let add_zero_elim = arena.nat_elim(add_zero_path, base_proof, step_proof, v0);
+        let add_zero_body = arena.lam(Multiplicity::Zero, add_zero_elim);
+        assert_eq!(check_closed(&arena, add_zero_body, add_zero_ty), Ok(()));
+
+        let mul_step_a = arena.app(add_ann, v0);
+        let mul_step = arena.app(mul_step_a, v2);
+        let mul_elim = arena.nat_elim(nat, zero, mul_step, v1);
+
+        let mul_bad_inner = arena.pi(Multiplicity::One, nat, nat);
+        let mul_bad_ty = arena.pi(Multiplicity::One, nat, mul_bad_inner);
+        let mul_bad_l1 = arena.lam(Multiplicity::One, mul_elim);
+        let mul_bad = arena.lam(Multiplicity::One, mul_bad_l1);
+        assert_eq!(
+            check_closed(&arena, mul_bad, mul_bad_ty),
+            Err(TypeError::BinderUsageViolation {
+                used: Multiplicity::Many,
+                expected: Multiplicity::One,
+            })
+        );
+
+        let mul_ok_inner = arena.pi(Multiplicity::Many, nat, nat);
+        let mul_ok_ty = arena.pi(Multiplicity::One, nat, mul_ok_inner);
+        let mul_ok_l1 = arena.lam(Multiplicity::Many, mul_elim);
+        let mul_ok = arena.lam(Multiplicity::One, mul_ok_l1);
+        assert_eq!(check_closed(&arena, mul_ok, mul_ok_ty), Ok(()));
     }
 }

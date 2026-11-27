@@ -9,7 +9,7 @@ pub use check::{Ctx, TypeError, check, check_closed, check_is_type, infer, infer
 pub use cubical::{Cof, Dim, DimVar, Face};
 pub use level::{Level, LevelVar};
 pub use multiplicity::{Multiplicity, UsageError, UsageVec};
-pub use nbe::{Closure, Env, EvalError, Neutral, TypeLine, Value};
+pub use nbe::{Closure, DoubleClosure, Env, EvalError, Neutral, TypeLine, Value};
 pub use term::{CofTerm, DeBruijnLevel, Index, Term, TermArena, TermId};
 
 #[must_use]

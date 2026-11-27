@@ -24,7 +24,7 @@ Apollo supports macOS, Linux, and Windows.
 - `crates/apollo-auto`: Runs e-graph congruence and linear arithmetic proof automation.
 - `crates/apollo-codegen`: Erases proofs and emits Rust source code.
 - `crates/apollo-lsp`: Serves editor and machine-readable proof interfaces.
-- `crates/apollo-cli`: Provides the `apollo` binary.
+- `crates/apollo-cli`: Gives the `apollo` binary.
 - `xtask`: Runs cross-platform quality checks and documentation checks.
 
 ## Documentation

@@ -13,7 +13,7 @@ Use these exact terms consistently in all documentation files.
 - **Higher Inductive Type**: An inductive type with both point constructors and path constructors.
 - **Normalization by Evaluation**: A method that reduces terms through a semantic domain to normal forms.
 - **Proof Erasure**: The removal of `0`-multiplicity proof terms before code generation.
-- **Proof Artifact**: A content-addressed `.aplc` file that the kernel verifies independently.
+- **Proof Artifact**: A content-addressed `.aplc` file that the kernel checks independently.
 - **Transactional Proof State**: An immutable in-memory proof state that supports parallel speculative branching.
 - **e-graph**: A data structure that stores equivalence classes of terms for equality saturation.
 

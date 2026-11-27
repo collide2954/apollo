@@ -361,6 +361,7 @@ mod tests {
 
         let mut scaled = UsageVec::from_slice(&[Multiplicity::One, Multiplicity::Many])
             .scale(Multiplicity::Zero);
+        assert!(!scaled.is_empty());
         assert_eq!(scaled.as_slice(), &[Multiplicity::Zero, Multiplicity::Zero]);
         assert_eq!(scaled.pop_last(), Some(Multiplicity::Zero));
         assert_eq!(scaled.len(), 1);

@@ -1,9 +1,11 @@
 pub mod level;
 pub mod multiplicity;
+pub mod nbe;
 pub mod term;
 
 pub use level::{Level, LevelVar};
 pub use multiplicity::{Multiplicity, UsageError, UsageVec};
+pub use nbe::{Closure, Env, EvalError, Neutral, Value};
 pub use term::{DeBruijnLevel, Index, Term, TermArena, TermId};
 
 #[must_use]

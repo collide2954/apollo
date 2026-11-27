@@ -53,3 +53,4 @@ missing_panics_doc = "allow"
 
 [workspace.dependencies]
 apollo-kernel = { version = "0.4.0", path = "crates/apollo-kernel" }
+apollo-syntax = { version = "0.4.0", path = "crates/apollo-syntax" }

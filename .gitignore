@@ -1,0 +1,7 @@
+/target/
+/mutants.out/
+/mutants.out.old/
+*.profraw
+*.profdata
+.DS_Store
+Thumbs.db

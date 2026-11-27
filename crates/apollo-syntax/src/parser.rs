@@ -773,7 +773,7 @@ mod tests {
             assert_eq!(m.decls[0].params[0].mult, MultAst::Many);
         }
 
-        let nested_pi = parse_expr("(0 f: (1 _: A) -> B) -> B");
+        let nested_pi = parse_expr("(0 x: (A)) -> B");
         assert!(matches!(nested_pi.map(|e| e.kind), Ok(ExprKind::Pi { .. })));
         let grouped_call = parse_expr("((f))(x)");
         assert!(matches!(

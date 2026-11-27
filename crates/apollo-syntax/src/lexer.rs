@@ -111,13 +111,13 @@ impl<'a> Lexer<'a> {
         loop {
             self.rest = self.rest.trim_start();
             if let Some(after) = self.rest.strip_prefix("//") {
-                self.rest = after.find('\n').map_or("", |newline| &after[newline + 1..]);
+                self.rest = after.split_once('\n').map_or("", |(_, tail)| tail);
                 continue;
             }
             if let Some(after) = self.rest.strip_prefix("/*") {
                 let start = self.pos();
-                if let Some(end) = after.find("*/") {
-                    self.rest = &after[end + 2..];
+                if let Some((_, tail)) = after.split_once("*/") {
+                    self.rest = tail;
                     continue;
                 }
                 self.rest = "";

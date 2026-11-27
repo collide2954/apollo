@@ -10,7 +10,7 @@ pub use cubical::{Cof, Dim, DimVar, Face};
 pub use level::{Level, LevelVar};
 pub use multiplicity::{Multiplicity, UsageError, UsageVec};
 pub use nbe::{Closure, Env, EvalError, Neutral, TypeLine, Value};
-pub use term::{DeBruijnLevel, Index, Term, TermArena, TermId};
+pub use term::{CofTerm, DeBruijnLevel, Index, Term, TermArena, TermId};
 
 #[must_use]
 pub const fn version() -> &'static str {

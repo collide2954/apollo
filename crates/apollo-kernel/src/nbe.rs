@@ -1,10 +1,10 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::cubical::{Dim, DimVar};
+use crate::cubical::{Cof, Dim, DimVar};
 use crate::level::Level;
 use crate::multiplicity::Multiplicity;
-use crate::term::{DeBruijnLevel, Index, Term, TermArena, TermId};
+use crate::term::{CofTerm, DeBruijnLevel, Index, Term, TermArena, TermId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalError {
@@ -100,6 +100,17 @@ pub enum Closure {
         dst: Dim,
         func: Arc<Value>,
     },
+    HComPi {
+        codomain: Box<Self>,
+        src: Dim,
+        dst: Dim,
+        branches: Vec<(Cof, Self)>,
+        cap: Arc<Value>,
+    },
+    AppArg {
+        tube: Box<Self>,
+        arg: Arc<Value>,
+    },
 }
 
 impl Closure {
@@ -131,6 +142,34 @@ impl Closure {
                 };
                 coe_line(arena, &cod_line, *src, *dst, applied)
             }
+            Self::HComPi {
+                codomain,
+                src,
+                dst,
+                branches,
+                cap,
+            } => {
+                let res_ty = codomain.apply(arena, arg.clone())?;
+                let arg_arc = Arc::new(arg.clone());
+                let app_branches = branches
+                    .iter()
+                    .map(|(cof, tube)| {
+                        (
+                            cof.clone(),
+                            Self::AppArg {
+                                tube: Box::new(tube.clone()),
+                                arg: Arc::clone(&arg_arc),
+                            },
+                        )
+                    })
+                    .collect();
+                let app_cap = apply(arena, cap, arg)?;
+                hcom_val(arena, &res_ty, *src, *dst, app_branches, app_cap)
+            }
+            Self::AppArg { tube, arg: fixed } => {
+                let func_val = tube.apply(arena, arg)?;
+                apply(arena, &func_val, (**fixed).clone())
+            }
         }
     }
 }
@@ -155,6 +194,13 @@ pub enum Neutral {
         src: Dim,
         dst: Dim,
         term: Arc<Value>,
+    },
+    HCom {
+        ty: Arc<Value>,
+        src: Dim,
+        dst: Dim,
+        branches: Vec<(Cof, Closure)>,
+        cap: Arc<Value>,
     },
 }
 
@@ -288,20 +334,124 @@ pub fn eval(arena: &TermArena, env: &[Value], id: TermId) -> Result<Value, EvalE
             left,
             right,
             dim,
-        } => {
-            let dim_val = eval(arena, env, *dim)?;
-            let left_val = eval(arena, env, *left)?;
-            let right_val = eval(arena, env, *right)?;
-            let path_val = eval(arena, env, *path)?;
-            papp(arena, &path_val, &left_val, &right_val, &dim_val)
-        }
+        } => eval_papp(arena, env, *path, *left, *right, *dim),
         Term::Coe {
             line,
             src,
             dst,
             term,
         } => eval_coe(arena, env, *line, *src, *dst, *term),
+        Term::HCom {
+            ty,
+            src,
+            dst,
+            branches,
+            cap,
+        } => eval_hcom(arena, env, *ty, *src, *dst, branches, *cap),
     }
+}
+
+pub fn eval_cof(arena: &TermArena, env: &[Value], cof: &CofTerm) -> Result<Cof, EvalError> {
+    match cof {
+        CofTerm::Top => Ok(Cof::Top),
+        CofTerm::Bot => Ok(Cof::Bot),
+        CofTerm::Eq(lhs, rhs) => {
+            let lval = eval(arena, env, *lhs)?;
+            let rval = eval(arena, env, *rhs)?;
+            match (lval, rval) {
+                (Value::Dim(d1), Value::Dim(d2)) => Ok(Cof::eq(d1, d2)),
+                _ => Ok(Cof::Bot),
+            }
+        }
+        CofTerm::And(lhs, rhs) => Ok(Cof::and(
+            eval_cof(arena, env, lhs)?,
+            eval_cof(arena, env, rhs)?,
+        )),
+        CofTerm::Or(lhs, rhs) => Ok(Cof::or(
+            eval_cof(arena, env, lhs)?,
+            eval_cof(arena, env, rhs)?,
+        )),
+    }
+}
+
+fn eval_hcom(
+    arena: &TermArena,
+    env: &[Value],
+    ty: TermId,
+    src: TermId,
+    dst: TermId,
+    branches: &[(CofTerm, TermId)],
+    cap: TermId,
+) -> Result<Value, EvalError> {
+    let ty_val = eval(arena, env, ty)?;
+    let src_val = eval(arena, env, src)?;
+    let dst_val = eval(arena, env, dst)?;
+    let cap_val = eval(arena, env, cap)?;
+    let mut eval_branches = Vec::with_capacity(branches.len());
+    for (cof_term, tube) in branches {
+        let cof = eval_cof(arena, env, cof_term)?;
+        eval_branches.push((cof, Closure::new(env.to_vec(), *tube)));
+    }
+    match (src_val, dst_val) {
+        (Value::Dim(s), Value::Dim(d)) => hcom_val(arena, &ty_val, s, d, eval_branches, cap_val),
+        _ => Ok(cap_val),
+    }
+}
+
+pub fn hcom_val(
+    arena: &TermArena,
+    ty: &Value,
+    src: Dim,
+    dst: Dim,
+    branches: Vec<(Cof, Closure)>,
+    cap: Value,
+) -> Result<Value, EvalError> {
+    if src == dst {
+        return Ok(cap);
+    }
+    let mut active_branches = Vec::new();
+    for (cof, tube) in branches {
+        if cof == Cof::Top {
+            return tube.apply(arena, Value::Dim(dst));
+        }
+        if cof.is_consistent() {
+            active_branches.push((cof, tube));
+        }
+    }
+    match ty {
+        Value::Pi { mult, codomain, .. } => Ok(Value::Lam {
+            mult: *mult,
+            body: Closure::HComPi {
+                codomain: Box::new(codomain.clone()),
+                src,
+                dst,
+                branches: active_branches,
+                cap: Arc::new(cap),
+            },
+        }),
+        _ => Ok(Value::Neutral(Arc::new(Neutral::HCom {
+            ty: Arc::new(ty.clone()),
+            src,
+            dst,
+            branches: active_branches,
+            cap: Arc::new(cap),
+        }))),
+    }
+}
+
+fn eval_papp(
+    arena: &TermArena,
+    env: &[Value],
+    path: TermId,
+    left: TermId,
+    right: TermId,
+    dim: TermId,
+) -> Result<Value, EvalError> {
+    let dim_val = eval(arena, env, dim)?;
+    let left_val = eval(arena, env, left)?;
+    let right_val = eval(arena, env, right)?;
+    let path_val = eval(arena, env, path)?;
+    papp(arena, &path_val, &left_val, &right_val, &dim_val)
 }
 
 fn eval_coe(
@@ -539,6 +689,46 @@ fn quote_neutral(
             let term_id = quote(arena, depth, term)?;
             Ok(arena.coe(line_id, src_id, dst_id, term_id))
         }
+        Neutral::HCom {
+            ty,
+            src,
+            dst,
+            branches,
+            cap,
+        } => {
+            let ty_id = quote(arena, depth, ty)?;
+            let src_id = quote(arena, depth, &Value::Dim(*src))?;
+            let dst_id = quote(arena, depth, &Value::Dim(*dst))?;
+            let mut quoted_branches = Vec::with_capacity(branches.len());
+            for (cof, tube) in branches {
+                let cof_term = quote_cof(arena, depth, cof)?;
+                let tube_val = tube.apply(arena, Value::dim_var(depth))?;
+                let tube_id = quote(arena, depth + 1, &tube_val)?;
+                quoted_branches.push((cof_term, tube_id));
+            }
+            let cap_id = quote(arena, depth, cap)?;
+            Ok(arena.hcom(ty_id, src_id, dst_id, quoted_branches, cap_id))
+        }
+    }
+}
+
+fn quote_cof(arena: &mut TermArena, depth: u32, cof: &Cof) -> Result<CofTerm, EvalError> {
+    match cof {
+        Cof::Top => Ok(CofTerm::Top),
+        Cof::Bot => Ok(CofTerm::Bot),
+        Cof::Eq(lhs, rhs) => {
+            let l_id = quote(arena, depth, &Value::Dim(*lhs))?;
+            let r_id = quote(arena, depth, &Value::Dim(*rhs))?;
+            Ok(CofTerm::Eq(l_id, r_id))
+        }
+        Cof::And(lhs, rhs) => Ok(CofTerm::And(
+            Box::new(quote_cof(arena, depth, lhs)?),
+            Box::new(quote_cof(arena, depth, rhs)?),
+        )),
+        Cof::Or(lhs, rhs) => Ok(CofTerm::Or(
+            Box::new(quote_cof(arena, depth, lhs)?),
+            Box::new(quote_cof(arena, depth, rhs)?),
+        )),
     }
 }
 
@@ -689,6 +879,39 @@ fn conv_neutral(
             let v1 = l1.apply(arena, dim)?;
             let v2 = l2.apply(arena, dim)?;
             conv(arena, depth + 1, &v1, &v2)
+        }
+        (
+            Neutral::HCom {
+                ty: ty1,
+                src: s1,
+                dst: d1,
+                branches: b1,
+                cap: c1,
+            },
+            Neutral::HCom {
+                ty: ty2,
+                src: s2,
+                dst: d2,
+                branches: b2,
+                cap: c2,
+            },
+        ) => {
+            if s1 != s2
+                || d1 != d2
+                || b1.len() != b2.len()
+                || !conv(arena, depth, ty1, ty2)?
+                || !conv(arena, depth, c1, c2)?
+            {
+                return Ok(false);
+            }
+            for ((cof1, tube1), (cof2, tube2)) in b1.iter().zip(b2) {
+                if !cof1.equivalent(cof2)
+                    || !conv_closures(arena, depth, Value::dim_var(depth), tube1, tube2)?
+                {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
         }
         _ => Ok(false),
     }
@@ -1207,6 +1430,80 @@ mod tests {
             eval(&arena, &env, stuck_d),
         ) {
             assert_eq!(quote(&mut arena, 3, &va), Ok(stuck_a));
+            assert_eq!(conv(&arena, 3, &va, &va), Ok(true));
+            assert_eq!(conv(&arena, 3, &va, &vb), Ok(false));
+            assert_eq!(conv(&arena, 3, &va, &vc), Ok(false));
+            assert_eq!(conv(&arena, 3, &va, &vd), Ok(false));
+        }
+    }
+
+    #[test]
+    fn computes_and_quotes_homogeneous_composition() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let u1 = arena.universe(Level::constant(1));
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+
+        let env = vec![
+            Value::var(DeBruijnLevel(0)),
+            Value::var(DeBruijnLevel(1)),
+            Value::dim_var(2),
+        ];
+
+        let deg = arena.hcom(v2, d0, d0, vec![], v1);
+        assert_eq!(
+            eval(&arena, &env, deg).and_then(|v| quote(&mut arena, 3, &v)),
+            Ok(v1)
+        );
+
+        let top_branch = arena.hcom(u1, d0, d1, vec![(crate::term::CofTerm::Top, u0)], u1);
+        assert_eq!(
+            eval(&arena, &[], top_branch).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(u0)
+        );
+
+        let pi_ty = arena.pi(Multiplicity::One, u1, u1);
+        let id_fn = arena.lam(Multiplicity::One, v0);
+        let pi_hcom = arena.hcom(
+            pi_ty,
+            d0,
+            d1,
+            vec![(crate::term::CofTerm::Eq(v0, d0), id_fn)],
+            id_fn,
+        );
+        let pi_hcom_app = arena.app(pi_hcom, u0);
+        assert!(eval(&arena, &env, pi_hcom_app).is_ok());
+
+        let face_i0 = crate::term::CofTerm::Eq(v0, d0);
+        let face_i1 = crate::term::CofTerm::Eq(v0, d1);
+        let face_or = crate::term::CofTerm::Or(
+            Box::new(face_i0.clone()),
+            Box::new(crate::term::CofTerm::And(
+                Box::new(face_i1.clone()),
+                Box::new(crate::term::CofTerm::Top),
+            )),
+        );
+        let stuck_hcom_a = arena.hcom(
+            v2,
+            d0,
+            d1,
+            vec![(face_or, v2), (crate::term::CofTerm::Bot, v2)],
+            v1,
+        );
+        let stuck_hcom_b = arena.hcom(v2, d0, d1, vec![(face_i0, v2)], v1);
+        let stuck_hcom_c = arena.hcom(v2, d1, d0, vec![(face_i1, v2)], v1);
+        let stuck_hcom_d = arena.hcom(v2, d0, d1, vec![], v1);
+        if let (Ok(va), Ok(vb), Ok(vc), Ok(vd)) = (
+            eval(&arena, &env, stuck_hcom_a),
+            eval(&arena, &env, stuck_hcom_b),
+            eval(&arena, &env, stuck_hcom_c),
+            eval(&arena, &env, stuck_hcom_d),
+        ) {
+            assert!(quote(&mut arena, 3, &va).is_ok());
             assert_eq!(conv(&arena, 3, &va, &va), Ok(true));
             assert_eq!(conv(&arena, 3, &va, &vb), Ok(false));
             assert_eq!(conv(&arena, 3, &va, &vc), Ok(false));

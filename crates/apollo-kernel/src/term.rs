@@ -44,6 +44,15 @@ impl TermId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CofTerm {
+    Top,
+    Bot,
+    Eq(TermId, TermId),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Term {
     Universe(Level),
     Var(Index),
@@ -95,6 +104,13 @@ pub enum Term {
         src: TermId,
         dst: TermId,
         term: TermId,
+    },
+    HCom {
+        ty: TermId,
+        src: TermId,
+        dst: TermId,
+        branches: Vec<(CofTerm, TermId)>,
+        cap: TermId,
     },
 }
 
@@ -245,6 +261,41 @@ impl TermArena {
     }
 
     #[must_use]
+    pub fn hcom(
+        &mut self,
+        ty: TermId,
+        src: TermId,
+        dst: TermId,
+        branches: Vec<(CofTerm, TermId)>,
+        cap: TermId,
+    ) -> TermId {
+        self.intern(Term::HCom {
+            ty,
+            src,
+            dst,
+            branches,
+            cap,
+        })
+    }
+
+    #[must_use]
+    pub fn format_cof(&self, cof: &CofTerm) -> String {
+        match cof {
+            CofTerm::Top => "⊤".to_owned(),
+            CofTerm::Bot => "⊥".to_owned(),
+            CofTerm::Eq(lhs, rhs) => {
+                format!("({} = {})", self.format_term(*lhs), self.format_term(*rhs))
+            }
+            CofTerm::And(lhs, rhs) => {
+                format!("({} ∧ {})", self.format_cof(lhs), self.format_cof(rhs))
+            }
+            CofTerm::Or(lhs, rhs) => {
+                format!("({} ∨ {})", self.format_cof(lhs), self.format_cof(rhs))
+            }
+        }
+    }
+
+    #[must_use]
     pub fn format_term(&self, id: TermId) -> String {
         let Some(term) = self.get(id) else {
             return format!("<invalid:{}>", id.raw());
@@ -315,13 +366,35 @@ impl TermArena {
                 self.format_term(*dst),
                 self.format_term(*term)
             ),
+            Term::HCom {
+                ty,
+                src,
+                dst,
+                branches,
+                cap,
+            } => {
+                let rendered: Vec<String> = branches
+                    .iter()
+                    .map(|(cof, tube)| {
+                        format!("{} => {}", self.format_cof(cof), self.format_term(*tube))
+                    })
+                    .collect();
+                format!(
+                    "hcom({}, {} -> {}, [{}], {})",
+                    self.format_term(*ty),
+                    self.format_term(*src),
+                    self.format_term(*dst),
+                    rendered.join(", "),
+                    self.format_term(*cap)
+                )
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DeBruijnLevel, Index, Term, TermArena, TermId};
+    use super::{CofTerm, DeBruijnLevel, Index, Term, TermArena, TermId};
     use crate::level::Level;
     use crate::multiplicity::Multiplicity;
 
@@ -379,6 +452,14 @@ mod tests {
         let plam = arena.plam(x);
         let papp = arena.papp(plam, x, x, d0);
         let coe = arena.coe(u0, d0, d1, x);
+        let cof = CofTerm::Or(
+            Box::new(CofTerm::And(
+                Box::new(CofTerm::Top),
+                Box::new(CofTerm::Eq(d0, d1)),
+            )),
+            Box::new(CofTerm::Bot),
+        );
+        let hcom = arena.hcom(u0, d0, d1, vec![(cof, x)], x);
 
         assert_eq!(arena.format_term(u0), "Type 0");
         assert_eq!(arena.format_term(pi), "(1 : Type 0) -> #0");
@@ -396,6 +477,10 @@ mod tests {
         assert_eq!(arena.format_term(plam), "<i> #0");
         assert_eq!(arena.format_term(papp), "(<i> #0 @ 0)");
         assert_eq!(arena.format_term(coe), "coe(Type 0, 0 -> 1, #0)");
+        assert_eq!(
+            arena.format_term(hcom),
+            "hcom(Type 0, 0 -> 1, [((⊤ ∧ (0 = 1)) ∨ ⊥) => #0], #0)"
+        );
         assert_eq!(arena.format_term(TermId(999)), "<invalid:999>");
     }
 }

@@ -1,10 +1,10 @@
 use std::fmt;
 
-use crate::cubical::Dim;
+use crate::cubical::{Cof, Dim, Face};
 use crate::level::Level;
 use crate::multiplicity::{Multiplicity, UsageError, UsageVec};
-use crate::nbe::{Closure, Env, EvalError, Value, conv, eval, proj_fst, subtype};
-use crate::term::{DeBruijnLevel, Index, Term, TermArena, TermId};
+use crate::nbe::{Closure, Env, EvalError, Value, conv, eval, eval_cof, proj_fst, subtype};
+use crate::term::{CofTerm, DeBruijnLevel, Index, Term, TermArena, TermId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeError {
@@ -23,6 +23,7 @@ pub enum TypeError {
     CannotInferPair,
     CannotInferPathLambda,
     PathBoundaryMismatch,
+    HComBoundaryMismatch,
     MultiplicityMismatch {
         expected: Multiplicity,
         actual: Multiplicity,
@@ -66,6 +67,7 @@ impl fmt::Display for TypeError {
                 f.write_str("cannot infer type of unannotated path lambda")
             }
             Self::PathBoundaryMismatch => f.write_str("path boundary mismatch"),
+            Self::HComBoundaryMismatch => f.write_str("composition boundary mismatch"),
             Self::MultiplicityMismatch { expected, actual } => {
                 write!(
                     f,
@@ -256,6 +258,91 @@ fn infer_coe(
     Ok((dst_ty, usage))
 }
 
+fn check_cof(arena: &TermArena, ctx: &mut Ctx, cof: &CofTerm) -> Result<(), TypeError> {
+    match cof {
+        CofTerm::Top | CofTerm::Bot => Ok(()),
+        CofTerm::Eq(lhs, rhs) => {
+            let _ = check(arena, ctx, Multiplicity::Zero, *lhs, &Value::Interval)?;
+            let _ = check(arena, ctx, Multiplicity::Zero, *rhs, &Value::Interval)?;
+            Ok(())
+        }
+        CofTerm::And(lhs, rhs) | CofTerm::Or(lhs, rhs) => {
+            check_cof(arena, ctx, lhs)?;
+            check_cof(arena, ctx, rhs)
+        }
+    }
+}
+
+fn restrict_env(env: &[Value], face: &Face) -> Env {
+    env.iter()
+        .map(|val| match val {
+            Value::Dim(dim) => Value::Dim(face.canonical_dim(*dim)),
+            other => other.clone(),
+        })
+        .collect()
+}
+
+struct HComSpec<'a> {
+    ty: TermId,
+    src: TermId,
+    dst: TermId,
+    branches: &'a [(CofTerm, TermId)],
+    cap: TermId,
+}
+
+fn infer_hcom(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    mode: Multiplicity,
+    spec: &HComSpec<'_>,
+) -> Result<(Value, UsageVec), TypeError> {
+    let _ = check_is_type(arena, ctx, spec.ty)?;
+    let _ = check(arena, ctx, Multiplicity::Zero, spec.src, &Value::Interval)?;
+    let _ = check(arena, ctx, Multiplicity::Zero, spec.dst, &Value::Interval)?;
+    let ty_val = eval(arena, &ctx.env, spec.ty)?;
+    let usage = check(arena, ctx, mode, spec.cap, &ty_val)?;
+    let depth = ctx.depth();
+
+    let mut checked_branches = Vec::with_capacity(spec.branches.len());
+    for (cof_term, tube) in spec.branches {
+        check_cof(arena, ctx, cof_term)?;
+        let cof = eval_cof(arena, &ctx.env, cof_term)?;
+        let _ = ctx.push_dim();
+        let tube_res = check(arena, ctx, Multiplicity::Zero, *tube, &ty_val);
+        ctx.pop();
+        let _ = tube_res?;
+
+        for face in cof.faces() {
+            let f_env = restrict_env(&ctx.env, &face);
+            let f_src = eval(arena, &f_env, spec.src)?;
+            let tube_at_src = Closure::new(f_env.clone(), *tube).apply(arena, f_src)?;
+            let cap_on_face = eval(arena, &f_env, spec.cap)?;
+            if !conv(arena, depth, &tube_at_src, &cap_on_face)? {
+                return Err(TypeError::HComBoundaryMismatch);
+            }
+        }
+        checked_branches.push((cof, *tube));
+    }
+
+    for i in 0..checked_branches.len() {
+        for j in (i + 1)..checked_branches.len() {
+            let overlap = Cof::and(checked_branches[i].0.clone(), checked_branches[j].0.clone());
+            for face in overlap.faces() {
+                let f_env = restrict_env(&ctx.env, &face);
+                let dim_j = Value::dim_var(depth);
+                let va = Closure::new(f_env.clone(), checked_branches[i].1)
+                    .apply(arena, dim_j.clone())?;
+                let vb = Closure::new(f_env, checked_branches[j].1).apply(arena, dim_j)?;
+                if !conv(arena, depth + 1, &va, &vb)? {
+                    return Err(TypeError::HComBoundaryMismatch);
+                }
+            }
+        }
+    }
+
+    Ok((ty_val, usage))
+}
+
 pub fn infer(
     arena: &TermArena,
     ctx: &mut Ctx,
@@ -330,6 +417,24 @@ pub fn infer(
             dst,
             term,
         } => infer_coe(arena, ctx, mode, *line, *src, *dst, *term),
+        Term::HCom {
+            ty,
+            src,
+            dst,
+            branches,
+            cap,
+        } => infer_hcom(
+            arena,
+            ctx,
+            mode,
+            &HComSpec {
+                ty: *ty,
+                src: *src,
+                dst: *dst,
+                branches,
+                cap: *cap,
+            },
+        ),
         Term::Lam { .. } => Err(TypeError::CannotInferLambda),
         Term::Pair { .. } => Err(TypeError::CannotInferPair),
         Term::PLam(_) => Err(TypeError::CannotInferPathLambda),
@@ -941,5 +1046,115 @@ mod tests {
             infer_closed(&arena, wrong_coe).err(),
             Some(TypeError::TypeMismatch)
         );
+    }
+
+    #[test]
+    fn proves_path_symmetry_and_transitivity_via_hcom() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+        let v4 = arena.var(Index(4));
+        let v5 = arena.var(Index(5));
+        let v6 = arena.var(Index(6));
+
+        let p_xy = arena.path(v3, v1, v0);
+        let sym_ret = arena.path(v4, v1, v2);
+        let sym_ty = [p_xy, v1, v0, u0]
+            .into_iter()
+            .fold(sym_ret, |cod, dom| arena.pi(Multiplicity::Zero, dom, cod));
+
+        let sym_tube_0 = arena.papp(v2, v4, v3, v0);
+        let sym_hcom = arena.hcom(
+            v4,
+            d0,
+            d1,
+            vec![
+                (crate::term::CofTerm::Eq(v0, d0), sym_tube_0),
+                (crate::term::CofTerm::Eq(v0, d1), v4),
+            ],
+            v3,
+        );
+        let sym_plam = arena.plam(sym_hcom);
+        let sym_expr = wrap_zero_lams(&mut arena, 4, sym_plam);
+        assert_eq!(check_closed(&arena, sym_expr, sym_ty), Ok(()));
+
+        let p_xy_tr = arena.path(v4, v2, v1);
+        let q_yz_tr = arena.path(v5, v2, v1);
+        let trans_ret = arena.path(v6, v4, v2);
+        let trans_ty = [q_yz_tr, p_xy_tr, v2, v1, v0, u0]
+            .into_iter()
+            .fold(trans_ret, |cod, dom| arena.pi(Multiplicity::Zero, dom, cod));
+
+        let cap_pi = arena.papp(v2, v5, v4, v0);
+        let tube_qj = arena.papp(v2, v5, v4, v0);
+        let trans_hcom = arena.hcom(
+            v6,
+            d0,
+            d1,
+            vec![
+                (crate::term::CofTerm::Eq(v0, d0), v6),
+                (crate::term::CofTerm::Eq(v0, d1), tube_qj),
+            ],
+            cap_pi,
+        );
+        let trans_plam = arena.plam(trans_hcom);
+        let trans_expr = wrap_zero_lams(&mut arena, 6, trans_plam);
+        assert_eq!(check_closed(&arena, trans_expr, trans_ty), Ok(()));
+    }
+
+    #[test]
+    fn rejects_inconsistent_hcom_cap_and_branch_overlap() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+        let v4 = arena.var(Index(4));
+
+        let p_xy = arena.path(v3, v1, v0);
+        let sym_ret = arena.path(v4, v1, v2);
+        let sym_ty = [p_xy, v1, v0, u0]
+            .into_iter()
+            .fold(sym_ret, |cod, dom| arena.pi(Multiplicity::Zero, dom, cod));
+
+        let bad_cap_hcom = arena.hcom(v4, d0, d1, vec![(crate::term::CofTerm::Eq(v0, d0), v3)], v3);
+        let bad_cap_plam = arena.plam(bad_cap_hcom);
+        let bad_cap_expr = wrap_zero_lams(&mut arena, 4, bad_cap_plam);
+        assert_eq!(
+            check_closed(&arena, bad_cap_expr, sym_ty),
+            Err(TypeError::HComBoundaryMismatch)
+        );
+
+        let overlap_cof = crate::term::CofTerm::Or(
+            Box::new(crate::term::CofTerm::Eq(v0, d0)),
+            Box::new(crate::term::CofTerm::Eq(v0, d1)),
+        );
+        let p_at_j = arena.papp(v2, v4, v3, v0);
+        let bad_overlap_hcom = arena.hcom(
+            v4,
+            d0,
+            d1,
+            vec![
+                (crate::term::CofTerm::Eq(v0, d0), p_at_j),
+                (overlap_cof, v4),
+            ],
+            v3,
+        );
+        let bad_overlap_plam = arena.plam(bad_overlap_hcom);
+        let bad_overlap_expr = wrap_zero_lams(&mut arena, 4, bad_overlap_plam);
+        assert_eq!(
+            check_closed(&arena, bad_overlap_expr, sym_ty),
+            Err(TypeError::HComBoundaryMismatch)
+        );
+
+        assert_ne!(TypeError::HComBoundaryMismatch.to_string(), "");
     }
 }

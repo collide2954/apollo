@@ -1,0 +1,65 @@
+fn id(0 A: Type 0, 1 x: A) -> A {
+    x
+}
+
+fn dup(0 A: Type 0, ω x: A) -> Sigma(1 _: A, A) {
+    (x, x)
+}
+
+fn swap(0 A: Type 0, 0 B: Type 0, ω p: Sigma(1 _: A, B)) -> Sigma(1 _: B, A) {
+    (p.1, p.0)
+}
+
+theorem refl(0 A: Type 0, 0 x: A) -> Path(_ => A, x, x) {
+    <i> x
+}
+
+theorem ap(
+    0 A: Type 0,
+    0 B: Type 0,
+    0 f: (1 _: A) -> B,
+    0 x: A,
+    0 y: A,
+    0 p: Path(_ => A, x, y),
+) -> Path(_ => B, f(x), f(y)) {
+    <i> f(p @ i)
+}
+
+theorem funext(
+    0 A: Type 0,
+    0 B: Type 0,
+    0 f: (1 _: A) -> B,
+    0 g: (1 _: A) -> B,
+    0 h: (0 x: A) -> Path(_ => B, f(x), g(x)),
+) -> Path(_ => (1 _: A) -> B, f, g) {
+    <i> |1 x| (h(x)) @ i
+}
+
+fn transport(
+    0 A: Type 0,
+    0 B: Type 0,
+    0 p: Path(_ => Type 0, A, B),
+    1 x: A,
+) -> B {
+    coe(i => p @ i, 0, 1, x)
+}
+
+theorem sym(
+    0 A: Type 0,
+    0 x: A,
+    0 y: A,
+    0 p: Path(_ => A, x, y),
+) -> Path(_ => A, y, x) {
+    <i> hcom(A, 0, 1, [i = 0 => <j> p @ j, i = 1 => <j> x], x)
+}
+
+theorem trans(
+    0 A: Type 0,
+    0 x: A,
+    0 y: A,
+    0 z: A,
+    0 p: Path(_ => A, x, y),
+    0 q: Path(_ => A, y, z),
+) -> Path(_ => A, x, z) {
+    <i> hcom(A, 0, 1, [i = 0 => <j> x, i = 1 => <j> q @ j], p @ i)
+}

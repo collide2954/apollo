@@ -1197,6 +1197,9 @@ pub fn r#struct<A>(r#type: A) -> A {
                 "pub fn call_mk_pair<A, B>() -> impl FnOnce(A, B) -> (A, B) {\n    mk_pair()\n}"
             ));
             assert!(code.contains("(move |v1| v1, x)"));
+            assert!(
+                code.contains("    ({\n        let v2: A = v1.clone();\n        v2\n    }, v1)")
+            );
             assert!(code.contains("pub fn ignore_unused_ty<A>(x: A) -> A"));
         }
     }
@@ -1282,6 +1285,24 @@ pub fn r#struct<A>(r#type: A) -> A {
                 }
             }
 
+            fn branch_dup(0 A: Type 0, 1 b: Bool, ω x: A, ω y: A) -> Sigma(1 _: A, A) {
+                match b {
+                    true => (x, y),
+                    false => (x, x),
+                }
+            }
+
+            fn after_branch(0 A: Type 0, 1 b: Bool, ω x: A, ω y: A) -> Sigma(1 _: A, A) {
+                (match b as |_| A { true => x, false => y }, x)
+            }
+
+            fn dup_mixed(
+                0 A: Type 0,
+                ω p: Sigma(1 _: Nat, A),
+            ) -> Sigma(1 _: Sigma(1 _: Nat, A), Sigma(1 _: Nat, A)) {
+                (p, p)
+            }
+
             theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
                 match b as |x| Path(_ => Bool, not(not(x)), x) {
                     true => <i> true,
@@ -1309,6 +1330,15 @@ pub fn r#struct<A>(r#type: A) -> A {
                     "pub fn choose<A>(b: bool, x: A) -> A {\n    if b { x } else { x }\n}"
                 )
             );
+            assert!(code.contains(
+                "pub fn branch_dup<A: Clone>(b: bool, x: A, y: A) -> (A, A) {\n    if b { (x.clone(), y) } else { (x.clone(), x) }\n}"
+            ));
+            assert!(code.contains(
+                "pub fn after_branch<A: Clone>(b: bool, x: A, y: A) -> (A, A) {\n    (if b { x.clone() } else { y }, x)\n}"
+            ));
+            assert!(code.contains(
+                "pub fn dup_mixed<A: Clone>(p: (u128, A)) -> ((u128, A), (u128, A)) {\n    (p.clone(), p)\n}"
+            ));
         }
     }
 
@@ -1364,6 +1394,30 @@ pub fn r#struct<A>(r#type: A) -> A {
                     succ(_, acc) => (acc.1, acc.0),
                 }
             }
+
+            fn iter_n(0 A: Type 0, 1 n: Nat, 1 x: A, ω f: (1 _: A) -> A) -> A {
+                match n {
+                    zero => x,
+                    succ(_, acc) => f(acc),
+                }
+            }
+
+            fn double_n(1 n: Nat, 1 m: Nat) -> Nat {
+                match n {
+                    zero => m,
+                    succ(_, acc) => add(acc, acc),
+                }
+            }
+
+            fn step_let(1 n: Nat, 1 m: Nat) -> Nat {
+                match n {
+                    zero => m,
+                    succ(_, acc) => {
+                        let 1 tmp: Nat = succ(acc);
+                        tmp
+                    },
+                }
+            }
         ";
 
         let emitted = compile_source(src);
@@ -1377,6 +1431,9 @@ pub fn r#struct<A>(r#type: A) -> A {
             assert!(code.contains("pub fn mul(n: u128, m: u128) -> u128 {\n    let mut v3: u128 = 0_u128;\n    for _v2 in 0..n {\n        v3 = add(m, v3);\n    }\n    v3\n}"));
             assert!(code.contains("pub fn repeat<A: Clone>(n: u128, x: A) -> A {\n    let mut v3: A = x.clone();\n    for _v2 in 0..n {\n        v3 = x.clone();\n    }\n    v3\n}"));
             assert!(code.contains("pub fn flip_n<A: Clone>(n: u128, p: (A, A)) -> (A, A) {\n    let mut v3: (A, A) = p;\n    for _v2 in 0..n {\n        v3 = (v3.clone().1, v3.0);\n    }\n    v3\n}"));
+            assert!(code.contains("pub fn iter_n<A>(n: u128, x: A, f: impl Fn(A) -> A) -> A {\n    let mut v4: A = x;\n    for _v3 in 0..n {\n        v4 = f(v4);\n    }\n    v4\n}"));
+            assert!(code.contains("pub fn double_n(n: u128, m: u128) -> u128 {\n    let mut v3: u128 = m;\n    for _v2 in 0..n {\n        v3 = add(v3, v3);\n    }\n    v3\n}"));
+            assert!(code.contains("pub fn step_let(n: u128, m: u128) -> u128 {\n    let mut v3: u128 = m;\n    for _v2 in 0..n {\n        v3 = {\n            let v4: u128 = v3 + 1;\n            v4\n        };\n    }\n    v3\n}"));
         }
     }
 }

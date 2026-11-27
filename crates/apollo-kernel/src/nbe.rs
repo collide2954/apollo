@@ -1978,4 +1978,94 @@ mod tests {
             assert_eq!(conv(&arena, 1, &va, &vb), Ok(false));
         }
     }
+
+    #[test]
+    fn quotes_and_compares_inductive_neutrals_with_dependent_motives() {
+        let mut arena = TermArena::new();
+        let unit = arena.unit();
+        let b_true = arena.bool_true();
+        let b_false = arena.bool_false();
+        let nat = arena.nat();
+        let zero = arena.zero();
+        let one = arena.succ(zero);
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+
+        // Depth 3 environment: level 0 = P (Var(2)), level 1 = x (Var(1)), level 2 = y (Var(0))
+        let env3 = vec![
+            Value::var(DeBruijnLevel(0)),
+            Value::var(DeBruijnLevel(1)),
+            Value::var(DeBruijnLevel(2)),
+        ];
+        // Under 1 motive binder (depth 4): P is Var(3), motive arg is Var(0).
+        let dep_motive = arena.app(v3, v0);
+        let alt_motive = arena.app(v3, v1);
+
+        let u_a = arena.unit_elim(dep_motive, b_true, v0);
+        let u_diff_s = arena.unit_elim(dep_motive, b_true, v1);
+        let u_diff_b = arena.unit_elim(dep_motive, b_false, v0);
+        let u_diff_m = arena.unit_elim(alt_motive, b_true, v0);
+
+        let vd_a = arena.void_elim(dep_motive, v0);
+        let vd_diff_s = arena.void_elim(dep_motive, v1);
+        let vd_diff_m = arena.void_elim(alt_motive, v0);
+
+        let b_a = arena.bool_elim(dep_motive, b_true, b_false, v0);
+        let b_diff_s = arena.bool_elim(dep_motive, b_true, b_false, v1);
+        let b_diff_t = arena.bool_elim(dep_motive, b_false, b_false, v0);
+        let b_diff_f = arena.bool_elim(dep_motive, b_true, b_true, v0);
+        let b_diff_m = arena.bool_elim(alt_motive, b_true, b_false, v0);
+
+        // Under 2 NatElim step binders (depth 5): ih = Var(0), k = Var(1), y = Var(2)
+        let n_a = arena.nat_elim(dep_motive, zero, v0, v0);
+        let n_diff_s = arena.nat_elim(dep_motive, zero, v0, v1);
+        let n_diff_base = arena.nat_elim(dep_motive, one, v0, v0);
+        let n_diff_m = arena.nat_elim(alt_motive, zero, v0, v0);
+        let n_diff_step_outer = arena.nat_elim(dep_motive, zero, v2, v0);
+
+        for term in [u_a, vd_a, b_a, n_a] {
+            let val = eval(&arena, &env3, term);
+            assert!(val.is_ok());
+            if let Ok(v) = val {
+                assert_eq!(quote(&mut arena, 3, &v), Ok(term));
+                assert_eq!(conv(&arena, 3, &v, &v), Ok(true));
+            }
+        }
+
+        for (lhs, rhs) in [
+            (u_a, u_diff_s),
+            (u_a, u_diff_b),
+            (u_a, u_diff_m),
+            (vd_a, vd_diff_s),
+            (vd_a, vd_diff_m),
+            (b_a, b_diff_s),
+            (b_a, b_diff_t),
+            (b_a, b_diff_f),
+            (b_a, b_diff_m),
+            (n_a, n_diff_s),
+            (n_a, n_diff_base),
+            (n_a, n_diff_m),
+            (n_a, n_diff_step_outer),
+            (u_a, vd_a),
+        ] {
+            if let (Ok(vl), Ok(vr)) = (eval(&arena, &env3, lhs), eval(&arena, &env3, rhs)) {
+                assert_eq!(conv(&arena, 3, &vl, &vr), Ok(false));
+            }
+        }
+
+        // At depth = 1: step binders are k = level 1, ih = level 2; nested Lam binds level 3 (vs 1*2 = 2).
+        let env1 = vec![Value::var(DeBruijnLevel(0))];
+        let lam_id = arena.lam(Multiplicity::One, v0);
+        let lam_acc = arena.lam(Multiplicity::One, v1);
+        let step_lam_a = arena.nat_elim(nat, unit, lam_id, v0);
+        let step_lam_b = arena.nat_elim(nat, unit, lam_acc, v0);
+        if let (Ok(va), Ok(vb)) = (
+            eval(&arena, &env1, step_lam_a),
+            eval(&arena, &env1, step_lam_b),
+        ) {
+            assert_eq!(conv(&arena, 1, &va, &vb), Ok(false));
+        }
+    }
 }

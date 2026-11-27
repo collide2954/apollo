@@ -1036,7 +1036,11 @@ mod tests {
             "fn f(1 u: Unit) -> Unit { match u { true => () } }",
             "fn f(1 b: Bool) -> Bool { match b { true => false } }",
             "fn f(1 b: Bool) -> Bool { match b { true => false, true => true } }",
+            "fn f(1 b: Bool) -> Bool { match b { true => false, true => true, false => false } }",
+            "fn f(1 b: Bool) -> Bool { match b { false => true, false => false, true => true } }",
             "fn f(1 n: Nat) -> Nat { match n { zero => zero } }",
+            "fn f(1 n: Nat) -> Nat { match n { zero => zero, zero => zero, succ(k) => k } }",
+            "fn f(1 n: Nat) -> Nat { match n { zero => zero, succ(k) => k, succ(k) => zero } }",
             "fn f(1 n: Nat) -> Nat { match n { zero => zero, true => zero } }",
             "fn f(1 g: (1 _: Bool) -> Bool, 1 b: Bool) -> Bool { g(match b { true => false, false => true }) }",
         ] {

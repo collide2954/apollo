@@ -261,9 +261,7 @@ fn add_counts(dst: &mut HashMap<usize, usize>, src: &HashMap<usize, usize>) {
 fn max_counts(dst: &mut HashMap<usize, usize>, src: &HashMap<usize, usize>) {
     for (&id, &count) in src {
         let entry = dst.entry(id).or_insert(0);
-        if count > *entry {
-            *entry = count;
-        }
+        *entry = (*entry).max(count);
     }
 }
 
@@ -672,5 +670,77 @@ fn write_atom_expr(expr: &RustExpr, depth: usize, out: &mut String) {
             out.push(')');
         }
         other => write_inline_expr(other, depth, out),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{FnKind, RustExpr, RustFn, RustParam, RustType};
+
+    #[test]
+    fn nat_loop_does_not_clone_callable_accumulator() {
+        let callable_ty = RustType::Callable {
+            kind: FnKind::Fn,
+            params: vec![RustType::Nat],
+            ret: Box::new(RustType::Nat),
+        };
+        let mut func = RustFn {
+            name: "repeat_fn".to_owned(),
+            type_params: Vec::new(),
+            clone_bounds: BTreeSet::new(),
+            params: vec![
+                RustParam {
+                    id: 0,
+                    name: "n".to_owned(),
+                    ty: RustType::Nat,
+                },
+                RustParam {
+                    id: 1,
+                    name: "f".to_owned(),
+                    ty: callable_ty.clone(),
+                },
+            ],
+            ret_ty: callable_ty.clone(),
+            body: RustExpr::NatLoop {
+                scrut: Box::new(RustExpr::Local {
+                    id: 0,
+                    name: "n".to_owned(),
+                }),
+                acc_id: 3,
+                acc_name: "acc".to_owned(),
+                acc_ty: callable_ty,
+                pred_id: 2,
+                pred_name: "k".to_owned(),
+                base: Box::new(RustExpr::Local {
+                    id: 1,
+                    name: "f".to_owned(),
+                }),
+                step: Box::new(RustExpr::Closure {
+                    params: vec![(4, "x".to_owned())],
+                    body: Box::new(RustExpr::Call {
+                        callee: Box::new(RustExpr::Local {
+                            id: 3,
+                            name: "acc".to_owned(),
+                        }),
+                        args: vec![RustExpr::Call {
+                            callee: Box::new(RustExpr::Local {
+                                id: 3,
+                                name: "acc".to_owned(),
+                            }),
+                            args: vec![RustExpr::Local {
+                                id: 4,
+                                name: "x".to_owned(),
+                            }],
+                        }],
+                    }),
+                }),
+            },
+        };
+        func.finalize_ownership();
+        let mut out = String::new();
+        func.write_to(&mut out);
+        assert!(!out.contains(".clone()"));
     }
 }

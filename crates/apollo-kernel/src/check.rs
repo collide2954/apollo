@@ -1891,22 +1891,30 @@ mod tests {
         let nonrec_fn = arena.lam(Multiplicity::One, nonrec_l1);
         assert_eq!(check_closed(&arena, nonrec_fn, nonrec_ty), Ok(()));
 
-        // Recursive DataElim capturing outer linear variable (1 d: Nat) in recursive branch must fail.
+        // Recursive DataElim capturing outer linear variable (1 d: Nat) in recursive branch must fail,
+        // while the exact same term with unrestricted (ω d: Nat) succeeds.
         let list_ty = arena.data(list_id, Vec::new());
-        let rec_inner = arena.pi(Multiplicity::One, nat, nat);
-        let rec_ty = arena.pi(Multiplicity::One, list_ty, rec_inner);
-        let cons_branch = arena.nat_elim(nat, v0, v2, v2);
-        let _ = v3;
+        let succ_v0 = arena.succ(v0);
+        let cons_branch = arena.nat_elim(nat, v2, succ_v0, v0);
+        let _ = (zero, v3);
         let rec_elim = arena.data_elim(list_id, Vec::new(), nat, vec![v0, cons_branch], v1);
-        let rec_l1 = arena.lam(Multiplicity::One, rec_elim);
-        let rec_fn = arena.lam(Multiplicity::One, rec_l1);
+
+        let rec_bad_inner = arena.pi(Multiplicity::One, nat, nat);
+        let rec_bad_ty = arena.pi(Multiplicity::One, list_ty, rec_bad_inner);
+        let rec_bad_l1 = arena.lam(Multiplicity::One, rec_elim);
+        let rec_bad_fn = arena.lam(Multiplicity::One, rec_bad_l1);
         assert_eq!(
-            check_closed(&arena, rec_fn, rec_ty),
+            check_closed(&arena, rec_bad_fn, rec_bad_ty),
             Err(TypeError::BinderUsageViolation {
                 used: Multiplicity::Many,
                 expected: Multiplicity::One,
             })
         );
-        let _ = zero;
+
+        let rec_ok_inner = arena.pi(Multiplicity::Many, nat, nat);
+        let rec_ok_ty = arena.pi(Multiplicity::One, list_ty, rec_ok_inner);
+        let rec_ok_l1 = arena.lam(Multiplicity::Many, rec_elim);
+        let rec_ok_fn = arena.lam(Multiplicity::One, rec_ok_l1);
+        assert_eq!(check_closed(&arena, rec_ok_fn, rec_ok_ty), Ok(()));
     }
 }

@@ -1326,6 +1326,7 @@ mod tests {
             "enum E(0 A: Type 0) { Mk(1 _: A) } fn f() -> Type 0 { A }",
             "struct S { 1 x: Nat } fn f() -> Nat { x }",
             "enum List(0 A: Type 0) { Nil, Cons(ω h: A, 1 t: List(A)) } fn f(1 xs: List(Nat)) -> Nat { match xs { List::Nil => zero, List::Cons(h, _, ih) => ih } } fn after() -> Nat { h }",
+            "enum List(0 A: Type 0) { Nil, Cons(ω h: A, 1 t: List(A)) } fn f(1 xs: List(Nat)) -> Nat { match xs { List::Nil => zero, List::Cons(h, _, ih) => ih } } fn after() -> List(Nat) { xs }",
         ] {
             assert!(
                 matches!(

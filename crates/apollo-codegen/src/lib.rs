@@ -1649,6 +1649,7 @@ pub fn r#impl<A>(r#type: A) -> A {
             enum OptMany(0 A: Type 0) { None, Some(ω val: A) }
             enum PairE(0 A: Type 0) { Both(1 a: A, 1 b: A) }
             struct Pt(0 A: Type 0) { 1 x: A, 1 y: A }
+            struct Box1(0 A: Type 0) { 1 val: A }
             enum FnBox(0 A: Type 0) { Mk(ω f: (1 _: A) -> A) }
 
             fn mk_bi(0 A: Type 0, 0 B: Type 0, 1 a: A, 1 b: B) -> Bi(A, B) {
@@ -1660,8 +1661,8 @@ pub fn r#impl<A>(r#type: A) -> A {
             fn let_in_enum(0 A: Type 0, ω x: A) -> OptMany(Sigma(1 _: A, A)) {
                 OptMany::Some({ let ω y: A = x; (y, y) })
             }
-            fn let_in_struct(0 A: Type 0, ω x: A) -> Pt(Sigma(1 _: A, A)) {
-                Pt { x: { let ω y: A = x; (y, y) }, y: (x, x) }
+            fn let_in_struct(0 A: Type 0, ω x: A) -> Box1(Sigma(1 _: A, A)) {
+                Box1 { val: { let ω y: A = x; (y, y) } }
             }
             fn dup_in_match(0 A: Type 0, 1 o: OptMany(A), ω d: A) -> Pt(A) {
                 match o {

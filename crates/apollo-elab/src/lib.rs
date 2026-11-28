@@ -371,7 +371,8 @@ impl Elaborator {
             | ExprKind::False
             | ExprKind::Nat
             | ExprKind::Zero
-            | ExprKind::Succ(_) => self.elab_primitive(&expr.kind),
+            | ExprKind::Succ(_)
+            | ExprKind::Add { .. } => self.elab_primitive(&expr.kind),
             ExprKind::Match {
                 scrut,
                 motive,
@@ -450,6 +451,11 @@ impl Elaborator {
             ExprKind::Succ(pred) => {
                 let pred_id = self.elab_expr(pred, Some(&Value::Nat))?;
                 Ok(self.arena.succ(pred_id))
+            }
+            ExprKind::Add { lhs, rhs } => {
+                let lhs_id = self.elab_expr(lhs, Some(&Value::Nat))?;
+                let rhs_id = self.elab_expr(rhs, Some(&Value::Nat))?;
+                Ok(apollo_auto::add_term(&mut self.arena, lhs_id, rhs_id))
             }
             _ => Ok(self.arena.tt()),
         }
@@ -1569,6 +1575,46 @@ mod tests {
             check_source(bad_args),
             Err(ElabError::InvalidData { .. })
         ));
+    }
+
+    #[test]
+    fn elaborates_builtin_addition_with_definitional_computation() {
+        let src = r"
+            fn add(1 n: Nat, 1 m: Nat) -> Nat {
+                match n { zero => m, succ(_, ih) => succ(ih) }
+            }
+            fn plus(1 a: Nat, 1 b: Nat) -> Nat { a + b }
+            fn double(ω n: Nat) -> Nat { n + n }
+            theorem zero_plus(0 n: Nat) -> Path(_ => Nat, zero + n, n) { <i> n }
+            theorem succ_plus(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, succ(a) + b, succ(a + b)) {
+                <i> succ(a + b)
+            }
+            theorem two_plus_one() -> Path(_ => Nat, succ(succ(zero)) + succ(zero), succ(succ(succ(zero)))) {
+                <i> succ(succ(succ(zero)))
+            }
+            theorem plus_is_add(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, a + b, add(a, b)) {
+                <i> a + b
+            }
+            theorem plus_zero(0 n: Nat) -> Path(_ => Nat, n + zero, n) {
+                match n as |x| Path(_ => Nat, x + zero, x) {
+                    zero => <i> zero,
+                    succ(k, ih) => <i> succ(ih @ i),
+                }
+            }
+        ";
+        let checked = check_source(src);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+
+        for bad in [
+            "fn bad(1 b: Bool) -> Nat { b + zero }",
+            "fn bad(1 n: Nat) -> Nat { n + n }",
+            "theorem bad(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, a + b, b + a) { <i> a + b }",
+        ] {
+            assert!(
+                matches!(check_source(bad), Err(ElabError::Type { .. })),
+                "expected type error for: {bad}"
+            );
+        }
     }
 
     #[test]

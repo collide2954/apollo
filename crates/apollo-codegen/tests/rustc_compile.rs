@@ -135,6 +135,8 @@ const ARITH_SRC: &str = r"
     fn flip_n(0 A: Type 0, 1 n: Nat, 1 p: Sigma(1 _: A, A)) -> Sigma(1 _: A, A) {
         match n { zero => p, succ(_, acc) => (acc.1, acc.0) }
     }
+    fn plus(1 a: Nat, 1 b: Nat) -> Nat { a + b }
+    fn triple(ω n: Nat) -> Nat { n + n + n }
 ";
 
 const ARITH_DRIVER: &str = r#"
@@ -156,6 +158,9 @@ const ARITH_DRIVER: &str = r#"
             apollo_arith::flip_n(3, (String::from("a"), String::from("b"))),
             (String::from("b"), String::from("a"))
         );
+        assert_eq!(apollo_arith::plus(17, 25), 42);
+        assert_eq!(apollo_arith::plus(0, 9), 9);
+        assert_eq!(apollo_arith::triple(14), 42);
     }
 "#;
 

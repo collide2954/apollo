@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "apollo-auto"
 version = "0.11.0"
+dependencies = [
+ "apollo-kernel",
+]
 
 [[package]]
 name = "apollo-cli"
@@ -28,6 +31,7 @@ dependencies = [
 name = "apollo-elab"
 version = "0.11.0"
 dependencies = [
+ "apollo-auto",
  "apollo-kernel",
  "apollo-syntax",
 ]

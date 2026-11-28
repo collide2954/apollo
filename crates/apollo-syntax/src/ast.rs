@@ -236,6 +236,10 @@ pub enum ExprKind {
     Nat,
     Zero,
     Succ(Box<Expr>),
+    Add {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     Match {
         scrut: Box<Expr>,
         motive: Option<(String, Box<Expr>)>,

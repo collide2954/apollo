@@ -54,6 +54,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [workspace.dependencies]
+apollo-auto = { version = "0.11.0", path = "crates/apollo-auto" }
 apollo-codegen = { version = "0.11.0", path = "crates/apollo-codegen" }
 apollo-elab = { version = "0.11.0", path = "crates/apollo-elab" }
 apollo-kernel = { version = "0.11.0", path = "crates/apollo-kernel" }

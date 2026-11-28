@@ -466,7 +466,24 @@ impl<'a> Parser<'a> {
         if self.check(&TokenKind::LAngle) {
             return self.parse_plam();
         }
-        self.parse_postfix()
+        self.parse_sum()
+    }
+
+    fn parse_sum(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_postfix()?;
+        while self.check(&TokenKind::Plus) {
+            let _ = self.advance();
+            let rhs = self.parse_postfix()?;
+            let span = expr.span.merge(rhs.span);
+            expr = Expr {
+                kind: ExprKind::Add {
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_lambda(&mut self) -> Result<Expr, ParseError> {
@@ -1489,6 +1506,40 @@ mod tests {
         }
         assert!(parse_module("enum Bad { Loop(<i>) S1::Base .. S1::Base }").is_err());
         assert!(parse_module("enum Bad { Loop(<i>) = S1::Base }").is_err());
+    }
+
+    #[test]
+    fn parses_left_associative_addition_below_postfix_forms() {
+        let sum = parse_expr("a + f(b) + p @ i");
+        assert!(sum.is_ok(), "unexpected error: {:?}", sum.err());
+        if let Ok(expr) = sum {
+            assert_eq!(expr.span, crate::Span::new(0, 16));
+            assert!(matches!(
+                &expr.kind,
+                ExprKind::Add { lhs, rhs }
+                    if matches!(rhs.kind, ExprKind::PApp { .. })
+                        && lhs.span == crate::Span::new(0, 8)
+                        && matches!(
+                            &lhs.kind,
+                            ExprKind::Add { lhs: a, rhs: fb }
+                                if matches!(&a.kind, ExprKind::Var(n) if n == "a")
+                                    && matches!(fb.kind, ExprKind::App { .. })
+                        )
+            ));
+        }
+
+        let in_path = parse_expr("Path(_ => Nat, x + zero, x)");
+        assert!(matches!(
+            in_path.map(|e| e.kind),
+            Ok(ExprKind::Path { left, .. }) if matches!(left.kind, ExprKind::Add { .. })
+        ));
+        let under_plam = parse_expr("<i> x + y");
+        assert!(matches!(
+            under_plam.map(|e| e.kind),
+            Ok(ExprKind::PLam { body, .. }) if matches!(body.kind, ExprKind::Add { .. })
+        ));
+        assert!(parse_expr("x +").is_err());
+        assert!(parse_expr("+ x").is_err());
     }
 
     #[test]

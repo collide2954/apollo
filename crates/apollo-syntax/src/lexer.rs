@@ -54,6 +54,7 @@ pub enum TokenKind {
     FatArrow,
     And,
     Or,
+    Plus,
     Eof,
 }
 
@@ -179,6 +180,7 @@ impl<'a> Lexer<'a> {
             }
             '.' => TokenKind::Dot,
             '@' => TokenKind::At,
+            '+' => TokenKind::Plus,
             '→' => TokenKind::Arrow,
             '⇒' => TokenKind::FatArrow,
             'ω' | '*' => TokenKind::Many,
@@ -334,6 +336,25 @@ mod tests {
                     TokenKind::Succ,
                     TokenKind::Match,
                     TokenKind::As,
+                    TokenKind::Eof,
+                ]
+            );
+        }
+        let plus = lex("a + succ(b)+c");
+        assert!(plus.is_ok());
+        if let Ok(list) = plus {
+            let kinds: Vec<TokenKind> = list.into_iter().map(|t| t.kind).collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    TokenKind::Ident("a".to_owned()),
+                    TokenKind::Plus,
+                    TokenKind::Succ,
+                    TokenKind::LParen,
+                    TokenKind::Ident("b".to_owned()),
+                    TokenKind::RParen,
+                    TokenKind::Plus,
+                    TokenKind::Ident("c".to_owned()),
                     TokenKind::Eof,
                 ]
             );

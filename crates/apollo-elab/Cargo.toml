@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+apollo-auto.workspace = true
 apollo-kernel.workspace = true
 apollo-syntax.workspace = true
 

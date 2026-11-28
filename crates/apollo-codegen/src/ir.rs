@@ -1346,7 +1346,10 @@ fn write_atom_expr(expr: &RustExpr, depth: usize, out: &mut String) {
         | RustExpr::VoidMatch(_)
         | RustExpr::UnitMatch { .. }
         | RustExpr::BoolMatch { .. }
-        | RustExpr::DataMatch { .. } => {
+        | RustExpr::DataMatch { .. }
+        | RustExpr::Let { .. }
+        | RustExpr::NatLoop { .. }
+        | RustExpr::RecDataMatch { .. } => {
             out.push('(');
             write_inline_expr(expr, depth, out);
             out.push(')');

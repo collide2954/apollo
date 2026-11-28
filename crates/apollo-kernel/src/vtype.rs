@@ -639,9 +639,9 @@ mod tests {
         let env1 = vec![Value::var(DeBruijnLevel(0))];
         let pi_v0 = arena.pi(Multiplicity::One, bool_ty, v0);
         let pi_v1 = arena.pi(Multiplicity::One, bool_ty, v1);
-        let outer_pi_v0 = arena.pi(Multiplicity::One, bool_ty, pi_v0);
+        let outer_pi_v1 = arena.pi(Multiplicity::One, bool_ty, pi_v1);
         if let (Ok(val_outer), Ok(val_exp)) =
-            (eval(&arena, &env1, outer_pi_v0), eval(&arena, &env1, pi_v1))
+            (eval(&arena, &env1, outer_pi_v1), eval(&arena, &env1, pi_v0))
         {
             assert_eq!(
                 check_nondep_pi(&arena, 1, &Value::Bool, &Value::Bool, &Value::Bool),
@@ -782,6 +782,126 @@ mod tests {
             assert_eq!(
                 check_inv_path(&arena, 1, &v_lr2, &v_dom, &id_val, &id_val),
                 Err(TypeError::InvalidEquivalence)
+            );
+        }
+    }
+
+    #[test]
+    fn checks_equiv_binder_depths() {
+        use super::check_equiv;
+
+        let mk_eq = |arena: &mut TermArena, f_ty, g_ty, sec_ty, ret_ty| {
+            let s2 = arena.sigma(Multiplicity::Zero, sec_ty, ret_ty);
+            let s1 = arena.sigma(Multiplicity::Zero, g_ty, s2);
+            arena.sigma(Multiplicity::Zero, f_ty, s1)
+        };
+
+        let mut arena = TermArena::new();
+        let bool_ty = arena.bool_ty();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+        let env1 = vec![Value::var(DeBruijnLevel(0))];
+
+        let pi_v0 = arena.pi(Multiplicity::One, bool_ty, v0);
+        let pi_v1 = arena.pi(Multiplicity::One, bool_ty, v1);
+        let b_to_b = arena.pi(Multiplicity::One, bool_ty, bool_ty);
+        let b_to_pi = arena.pi(Multiplicity::One, bool_ty, pi_v0);
+        let pi_to_b = arena.pi(Multiplicity::One, pi_v0, bool_ty);
+        let bad_g_pi = arena.pi(Multiplicity::One, pi_v1, bool_ty);
+
+        let g_b = arena.app(v1, v0);
+        let fg_b = arena.app(v2, g_b);
+        let fwd_b = arena.app(v2, v0);
+        let twice_b = arena.app(v2, fwd_b);
+        let fwd_a = arena.app(v3, v0);
+        let gf_a = arena.app(v2, fwd_a);
+        let twice_a = arena.app(v3, fwd_a);
+        let secf_a = arena.app(v1, fwd_a);
+
+        let p_fg_b = arena.path(bool_ty, fg_b, v0);
+        let path_twice_b = arena.path(bool_ty, twice_b, v0);
+        let p_gf_a = arena.path(bool_ty, gf_a, v0);
+        let path_twice_a = arena.path(bool_ty, twice_a, v0);
+        let p_secf_a = arena.path(bool_ty, secf_a, v0);
+        let p_fg_pi = arena.path(pi_v0, fg_b, v0);
+        let p_gf_pi = arena.path(pi_v0, gf_a, v0);
+
+        let sec_b = arena.pi(Multiplicity::Zero, bool_ty, p_fg_b);
+        let ret_b = arena.pi(Multiplicity::Zero, bool_ty, p_gf_a);
+        let sec_twice = arena.pi(Multiplicity::Zero, bool_ty, path_twice_b);
+        let ret_twice = arena.pi(Multiplicity::Zero, bool_ty, path_twice_a);
+        let ret_secf = arena.pi(Multiplicity::Zero, bool_ty, p_secf_a);
+        let sec_pi = arena.pi(Multiplicity::Zero, pi_v0, p_fg_pi);
+        let sec_bad_d = arena.pi(Multiplicity::Zero, pi_v1, p_fg_pi);
+        let ret_bad_d = arena.pi(Multiplicity::Zero, pi_v1, p_gf_pi);
+
+        let eq_gvar = mk_eq(&mut arena, b_to_b, b_to_b, sec_twice, ret_twice);
+        let eq_secvar = mk_eq(&mut arena, b_to_b, b_to_b, sec_b, ret_secf);
+        let eq_gdepth = mk_eq(&mut arena, b_to_pi, bad_g_pi, sec_pi, ret_b);
+        let eq_secdepth = mk_eq(&mut arena, b_to_pi, pi_to_b, sec_bad_d, ret_b);
+        let eq_retdepth = mk_eq(&mut arena, pi_to_b, b_to_pi, sec_b, ret_bad_d);
+
+        if let Ok(v_pi) = eval(&arena, &env1, pi_v0) {
+            for (eq_tm, t0, t1) in [
+                (eq_gvar, Value::Bool, Value::Bool),
+                (eq_secvar, Value::Bool, Value::Bool),
+                (eq_gdepth, Value::Bool, v_pi.clone()),
+                (eq_secdepth, Value::Bool, v_pi.clone()),
+                (eq_retdepth, v_pi, Value::Bool),
+            ] {
+                if let Ok(v_eq) = eval(&arena, &env1, eq_tm) {
+                    assert_eq!(
+                        check_equiv(&arena, 1, &v_eq, &t0, &t1),
+                        Err(TypeError::InvalidEquivalence)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn checks_vin_substitutes_only_target_dim() {
+        use std::sync::Arc;
+
+        use crate::check::Ctx;
+        use crate::cubical::DimVar;
+
+        let mut arena = TermArena::new();
+        let bool_ty = arena.bool_ty();
+        let b_true = arena.bool_true();
+        let b_false = arena.bool_false();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let (_, not_equiv) = build_not_equiv(&mut arena);
+
+        let mut ctx = Ctx::new();
+        let _ = ctx.push(Value::Path {
+            family: Closure::new(Vec::new(), bool_ty),
+            left: Arc::new(Value::True),
+            right: Arc::new(Value::False),
+        });
+        let _ = ctx.push_dim();
+        let _ = ctx.push_dim();
+
+        let p_at_i = arena.papp(v2, b_true, b_false, v0);
+        let p_at_j = arena.papp(v2, b_true, b_false, v1);
+        if let Ok(eq_val) = eval(&arena, &[], not_equiv) {
+            let expected = Value::VType {
+                dim: Dim::Var(DimVar(2)),
+                ty0: Arc::new(Value::Bool),
+                ty1: Arc::new(Value::Bool),
+                equiv: Arc::new(eq_val),
+            };
+            assert!(
+                ctx.check_v_in(&arena, Multiplicity::Zero, v0, p_at_i, b_false, &expected)
+                    .is_ok()
+            );
+            assert_eq!(
+                ctx.check_v_in(&arena, Multiplicity::Zero, v0, p_at_j, b_false, &expected),
+                Err(TypeError::VBoundaryMismatch)
             );
         }
     }

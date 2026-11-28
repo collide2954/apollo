@@ -380,7 +380,7 @@ mod tests {
         check_and_define_inductive, term_mentions_inductive,
     };
     use crate::Value;
-    use crate::check::{TypeError, check_closed};
+    use crate::check::{Ctx, TypeError, check, check_closed};
     use crate::level::Level;
     use crate::multiplicity::Multiplicity;
     use crate::nbe::{conv, eval, quote};
@@ -1217,6 +1217,109 @@ mod tests {
             assert_eq!(
                 check_closed(&arena, asym_lam, up_fn_ty),
                 Err(TypeError::HitBoundaryMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn restores_context_and_compares_hit_boundaries_at_field_depth() {
+        let mut arena = TermArena::new();
+        let nat = arena.nat();
+        let bool_ty = arena.bool_ty();
+        let b_true = arena.bool_true();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+
+        // Twist { Leaf, Turn(ω x: Twist, <i>) = x .. x }
+        let tw_id = arena.next_inductive_id();
+        let tw_ty = arena.data(tw_id, Vec::new());
+        let tw_res = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: Vec::new(),
+                level: Level::zero(),
+                ctors: vec![
+                    CtorDecl {
+                        fields: Vec::new(),
+                        boundary: None,
+                    },
+                    CtorDecl {
+                        fields: vec![FieldDecl {
+                            mult: Multiplicity::Many,
+                            ty: tw_ty,
+                            is_recursive: false,
+                        }],
+                        boundary: Some(PathBoundary {
+                            left: v0,
+                            right: v0,
+                        }),
+                    },
+                ],
+            },
+        );
+        assert_eq!(tw_res, Ok(tw_id));
+        assert!(
+            arena
+                .get_inductive(tw_id)
+                .is_some_and(|d| d.ctors[1].fields[0].is_recursive)
+        );
+        let mut ctx = Ctx::new();
+        if let Ok(tw_val) = eval(&arena, &[], tw_ty) {
+            let _ = ctx.push(tw_val);
+        }
+        let tw_elim = arena.data_elim(tw_id, Vec::new(), bool_ty, vec![b_true, v1], v0);
+        assert!(check(&arena, &mut ctx, Multiplicity::Zero, tw_elim, &Value::Bool).is_ok());
+        assert_eq!(ctx.depth(), 1);
+
+        // Cyl { Base(ω x: Nat), Line(ω x: Nat, <i>) = Base(x) .. Base(x) }
+        let cyl_id = arena.next_inductive_id();
+        let base_x = arena.ctor(cyl_id, 0, Vec::new(), vec![v0]);
+        let nat_field = FieldDecl {
+            mult: Multiplicity::Many,
+            ty: nat,
+            is_recursive: false,
+        };
+        let cyl_res = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: Vec::new(),
+                level: Level::zero(),
+                ctors: vec![
+                    CtorDecl {
+                        fields: vec![nat_field.clone()],
+                        boundary: None,
+                    },
+                    CtorDecl {
+                        fields: vec![nat_field],
+                        boundary: Some(PathBoundary {
+                            left: base_x,
+                            right: base_x,
+                        }),
+                    },
+                ],
+            },
+        );
+        assert_eq!(cyl_res, Ok(cyl_id));
+        let cyl_ty = arena.data(cyl_id, Vec::new());
+        let fn_ty = arena.pi(Multiplicity::Many, nat, nat);
+        let capture = arena.lam(Multiplicity::Many, v1);
+        let line_capture = arena.lam(Multiplicity::Many, v2);
+        let ident = arena.lam(Multiplicity::Many, v0);
+        let mut ctx = Ctx::new();
+        let (Ok(cyl_val), Ok(fn_val)) = (eval(&arena, &[], cyl_ty), eval(&arena, &[], fn_ty))
+        else {
+            return;
+        };
+        let _ = ctx.push(cyl_val);
+        for (line, expected) in [
+            (line_capture, Ok(())),
+            (ident, Err(TypeError::HitBoundaryMismatch)),
+        ] {
+            let elim = arena.data_elim(cyl_id, Vec::new(), fn_ty, vec![capture, line], v0);
+            assert_eq!(
+                check(&arena, &mut ctx, Multiplicity::Zero, elim, &fn_val).map(|_| ()),
+                expected
             );
         }
     }

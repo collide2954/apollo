@@ -265,9 +265,10 @@ impl Normalizer<'_> {
 
 #[cfg(test)]
 mod tests {
-    use apollo_kernel::{Ctx, TermArena, TermId, Value};
+    use apollo_kernel::nbe::eval;
+    use apollo_kernel::{Ctx, Index, TermArena, TermId, Value};
 
-    use super::{Normalizer, canon};
+    use super::{Normalizer, Shape, canon, shape};
     use crate::lemmas::{NatLemmas, add_val, succ_val};
     use crate::testing::{kernel_accepts, same};
 
@@ -293,6 +294,30 @@ mod tests {
             && same(arena, ctx, &eq.rhs, &expected)
             && kernel_accepts(arena, ctx, &eq);
         sound.then(|| (nf.atoms.iter().map(|a| a.key).collect(), nf.constant))
+    }
+
+    #[test]
+    fn recognizes_only_canonical_addition_recursors() {
+        let mut arena = TermArena::new();
+        let mut ctx = Ctx::new();
+        let env: Vec<Value> = (0..3).map(|_| ctx.push(Value::Nat)).collect();
+        let nat = arena.nat();
+        let bool_ty = arena.bool_ty();
+        let [ih, pred, outer] = [0, 1, 2].map(|i| arena.var(Index(i)));
+        let [first, second] = [2, 1].map(|i| arena.var(Index(i)));
+        let cases = [
+            (nat, ih, true),
+            (nat, pred, false),
+            (nat, outer, false),
+            (bool_ty, ih, false),
+        ];
+        for (motive, inner, expect_add) in cases {
+            let step = arena.succ(inner);
+            let elim = arena.nat_elim(motive, second, step, first);
+            let value = eval(&arena, &env, elim).unwrap_or(Value::Unit);
+            let is_add = matches!(shape(&arena, ctx.depth(), &value), Shape::Add(..));
+            assert_eq!(is_add, expect_add, "motive {motive:?}, step body {inner:?}");
+        }
     }
 
     #[test]

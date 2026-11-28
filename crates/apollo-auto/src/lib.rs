@@ -226,7 +226,11 @@ pub fn prove(arena: &mut TermArena, ctx: &mut Ctx, goal: &Value) -> Result<TermI
 
 #[cfg(test)]
 mod tests {
-    use apollo_kernel::{Ctx, EvalError, Index, Term, TermArena, TermId, TypeError, Value};
+    use apollo_kernel::nbe::{apply, eval};
+    use apollo_kernel::{
+        CtorDecl, Ctx, EvalError, FieldDecl, Index, InductiveDecl, Level, Multiplicity, Term,
+        TermArena, TermId, TypeError, Value, check_and_define_inductive,
+    };
 
     use super::{AutoError, add_term, prove, version};
     use crate::lemmas::{add_val, succ_val};
@@ -274,10 +278,96 @@ mod tests {
         );
     }
 
+    fn nat_to_nat(arena: &mut TermArena) -> Value {
+        let nat = arena.nat();
+        let fn_term = arena.pi(Multiplicity::Many, nat, nat);
+        eval(arena, &[], fn_term).unwrap_or(Value::Unit)
+    }
+
+    fn call(arena: &TermArena, func: &Value, arg: &Value) -> Value {
+        apply(arena, func, arg.clone()).unwrap_or(Value::Unit)
+    }
+
+    #[test]
+    fn closes_congruences_through_rerooted_hypotheses() {
+        let mut arena = TermArena::new();
+        let fn_ty = nat_to_nat(&mut arena);
+        let mut ctx = Ctx::new();
+        let f = ctx.push(fn_ty);
+        let a = ctx.push(Value::Nat);
+        let b = ctx.push(Value::Nat);
+        let c = ctx.push(Value::Nat);
+        let ab = nat_goal(&mut arena, &a, &b);
+        let _ = ctx.push(ab);
+        let ac = nat_goal(&mut arena, &a, &c);
+        let _ = ctx.push(ac);
+
+        let fb = call(&arena, &f, &b);
+        let fc = call(&arena, &f, &c);
+        for (lhs, rhs) in [(&b, &c), (&fb, &fc)] {
+            let goal = nat_goal(&mut arena, lhs, rhs);
+            let proved = prove(&mut arena, &mut ctx, &goal);
+            assert!(proved.is_ok(), "auto failed: {:?}", proved.err());
+        }
+        let fa = call(&arena, &f, &a);
+        let stuck = nat_goal(&mut arena, &fa, &a);
+        assert!(matches!(
+            prove(&mut arena, &mut ctx, &stuck),
+            Err(AutoError::Unproved { .. })
+        ));
+    }
+
+    #[test]
+    fn normalizes_sums_under_applications_and_constructors() {
+        let mut arena = TermArena::new();
+        let fn_ty = nat_to_nat(&mut arena);
+        let nat = arena.nat();
+        let box_id = arena.next_inductive_id();
+        let defined = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: Vec::new(),
+                level: Level::zero(),
+                ctors: vec![CtorDecl {
+                    fields: vec![FieldDecl {
+                        mult: Multiplicity::Many,
+                        ty: nat,
+                        is_recursive: false,
+                    }],
+                    boundary: None,
+                }],
+            },
+        );
+        assert_eq!(defined, Ok(box_id));
+        let box_term = arena.data(box_id, Vec::new());
+        let box_ty = eval(&arena, &[], box_term).unwrap_or(Value::Unit);
+
+        let mut ctx = Ctx::new();
+        let f = ctx.push(fn_ty);
+        let a = ctx.push(Value::Nat);
+        let b = ctx.push(Value::Nat);
+        let ab = sum(&mut arena, &a, &b);
+        let ba = sum(&mut arena, &b, &a);
+        let boxed = |arg: &Value| Value::Ctor {
+            id: box_id,
+            ctor: 0,
+            params: Vec::new(),
+            args: vec![arg.clone()],
+        };
+        let applied = (call(&arena, &f, &ab), call(&arena, &f, &ba));
+        let goals = [
+            nat_goal(&mut arena, &applied.0, &applied.1),
+            path_type(&mut arena, &box_ty, &boxed(&ab), &boxed(&ba)),
+        ];
+        for goal in goals {
+            let proved = prove(&mut arena, &mut ctx, &goal);
+            assert!(proved.is_ok(), "auto failed: {:?}", proved.err());
+        }
+    }
+
     #[test]
     fn converts_and_describes_auto_errors() {
-        let eval =
-            EvalError::InvalidTermId(TermArena::new().universe(apollo_kernel::Level::zero()));
+        let eval = EvalError::InvalidTermId(TermArena::new().universe(Level::zero()));
         assert!(matches!(AutoError::from(eval.clone()), AutoError::Eval(e) if e == eval));
         assert_eq!(
             AutoError::from(TypeError::TypeMismatch),

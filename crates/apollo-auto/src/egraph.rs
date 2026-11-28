@@ -156,11 +156,13 @@ impl EGraph {
     }
 
     #[must_use]
-    pub fn find(&self, mut node: usize) -> usize {
-        while self.parent[node] != node {
-            node = self.parent[node];
+    pub fn find(&self, node: usize) -> usize {
+        let parent = self.parent[node];
+        if parent == node {
+            node
+        } else {
+            self.find(parent)
         }
-        node
     }
 
     pub fn merge(&mut self, a: usize, b: usize, reason: Reason) {
@@ -207,18 +209,18 @@ impl EGraph {
     }
 
     pub fn close(&mut self) {
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for a in 0..self.nodes.len() {
-                for b in 0..a {
-                    if self.find(a) != self.find(b) && self.congruent(a, b) {
-                        self.merge(a, b, Reason::Congruence(a, b));
-                        changed = true;
-                    }
-                }
-            }
+        for _ in 0..self.nodes.len() {
+            let Some((a, b)) = self.pending() else {
+                return;
+            };
+            self.merge(a, b, Reason::Congruence(a, b));
         }
+    }
+
+    fn pending(&self) -> Option<(usize, usize)> {
+        (0..self.nodes.len())
+            .flat_map(|a| (0..a).map(move |b| (a, b)))
+            .find(|&(a, b)| self.find(a) != self.find(b) && self.congruent(a, b))
     }
 
     #[must_use]

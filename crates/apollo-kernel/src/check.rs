@@ -1821,4 +1821,92 @@ mod tests {
         let mul_ok = arena.lam(Multiplicity::One, mul_ok_l1);
         assert_eq!(check_closed(&arena, mul_ok, mul_ok_ty), Ok(()));
     }
+
+    #[test]
+    fn scales_outer_usage_only_on_recursive_data_branches() {
+        use crate::inductive::{
+            CtorDecl, FieldDecl, InductiveDecl, InductiveId, check_and_define_inductive,
+        };
+
+        let mut arena = TermArena::new();
+        let nat = arena.nat();
+        let zero = arena.zero();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+
+        // Non-recursive 1-field box: BoxNat { Mk(1 _: Nat) }
+        let box_id = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: Vec::new(),
+                level: Level::constant(0),
+                ctors: vec![CtorDecl {
+                    fields: vec![FieldDecl {
+                        mult: Multiplicity::One,
+                        ty: nat,
+                        is_recursive: false,
+                    }],
+                }],
+            },
+        );
+        assert!(box_id.is_ok());
+        let Ok(box_id) = box_id else {
+            return;
+        };
+
+        // Recursive NatList { Nil, Cons(1 tail: NatList) }
+        let self_list = arena.data(InductiveId(1), Vec::new());
+        let list_id = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: Vec::new(),
+                level: Level::constant(0),
+                ctors: vec![
+                    CtorDecl { fields: Vec::new() },
+                    CtorDecl {
+                        fields: vec![FieldDecl {
+                            mult: Multiplicity::One,
+                            ty: self_list,
+                            is_recursive: false,
+                        }],
+                    },
+                ],
+            },
+        );
+        assert!(list_id.is_ok());
+        let Ok(list_id) = list_id else {
+            return;
+        };
+
+        // Non-recursive DataElim capturing outer linear variable (1 d: Nat) must succeed.
+        let box_ty = arena.data(box_id, Vec::new());
+        let pair_ty = arena.sigma(Multiplicity::One, nat, nat);
+        let nonrec_inner = arena.pi(Multiplicity::One, nat, pair_ty);
+        let nonrec_ty = arena.pi(Multiplicity::One, box_ty, nonrec_inner);
+        let nonrec_branch = arena.pair(v1, v0);
+        let nonrec_elim = arena.data_elim(box_id, Vec::new(), pair_ty, vec![nonrec_branch], v1);
+        let nonrec_l1 = arena.lam(Multiplicity::One, nonrec_elim);
+        let nonrec_fn = arena.lam(Multiplicity::One, nonrec_l1);
+        assert_eq!(check_closed(&arena, nonrec_fn, nonrec_ty), Ok(()));
+
+        // Recursive DataElim capturing outer linear variable (1 d: Nat) in recursive branch must fail.
+        let list_ty = arena.data(list_id, Vec::new());
+        let rec_inner = arena.pi(Multiplicity::One, nat, nat);
+        let rec_ty = arena.pi(Multiplicity::One, list_ty, rec_inner);
+        let cons_branch = arena.nat_elim(nat, v0, v2, v2);
+        let _ = v3;
+        let rec_elim = arena.data_elim(list_id, Vec::new(), nat, vec![v0, cons_branch], v1);
+        let rec_l1 = arena.lam(Multiplicity::One, rec_elim);
+        let rec_fn = arena.lam(Multiplicity::One, rec_l1);
+        assert_eq!(
+            check_closed(&arena, rec_fn, rec_ty),
+            Err(TypeError::BinderUsageViolation {
+                used: Multiplicity::Many,
+                expected: Multiplicity::One,
+            })
+        );
+        let _ = zero;
+    }
 }

@@ -1580,7 +1580,7 @@ pub fn r#impl<A>(r#type: A) -> A {
             }
             enum Tree(0 A: Type 0) {
                 Leaf,
-                Node(1 left: Tree(A), 1 val: A, 1 right: Tree(A)),
+                Node(1 left: Tree(A), ω val: A, 1 right: Tree(A)),
             }
             fn tail_or_nil(0 A: Type 0, 1 xs: List(A)) -> List(A) {
                 match xs {
@@ -1626,6 +1626,160 @@ pub fn r#impl<A>(r#type: A) -> A {
             assert!(code.contains("f: &impl Fn(A) -> B"));
             assert!(code.contains("pub fn list_fill<A: Clone>(xs: List<A>, v: A) -> List<A>"));
             assert!(code.contains("pub fn tree_sum(t: Tree<u128>) -> u128"));
+            assert!(code.contains("v.clone()"));
+            assert!(code.contains(
+                "pub fn tail_or_nil<A>(xs: List<A>) -> List<A> {\n    match xs {\n        List::Nil => List::Nil,\n        List::Cons(_v1, v2) => (*v2),\n    }\n}"
+            ));
+            assert!(code.contains(
+                "pub fn append<A>(xs: List<A>, ys: List<A>) -> List<A> {\n    fn __apollo_rec_0<A>(scrut: List<A>, ys: List<A>) -> List<A> {\n        match scrut {\n            List::Nil => ys,\n            List::Cons(v2, v3) => {\n                let v4: List<A> = __apollo_rec_0(*v3, ys);\n                List::Cons(v2, Box::new(v4))\n            },\n        }\n    }\n    __apollo_rec_0(xs, ys)\n}"
+            ));
+        }
+    }
+
+    #[test]
+    fn extracts_data_erasure_multi_params_and_cloning() {
+        let src = r"
+            fn add(1 n: Nat, 1 m: Nat) -> Nat {
+                match n { zero => m, succ(_, acc) => succ(acc) }
+            }
+            struct Bi(0 A: Type 0, 0 B: Type 0) { 1 fst: A, 1 snd: B }
+            struct Tagged(0 n: Nat) { 1 val: Nat }
+            enum GhostEnum { Mk(0 ghost: Nat, 1 v: Nat) }
+            struct GhostStruct { 0 ghost: Nat, 1 v: Nat }
+            enum OptMany(0 A: Type 0) { None, Some(ω val: A) }
+            enum PairE(0 A: Type 0) { Both(1 a: A, 1 b: A) }
+            struct Pt(0 A: Type 0) { 1 x: A, 1 y: A }
+            enum FnBox(0 A: Type 0) { Mk(ω f: (1 _: A) -> A) }
+
+            fn mk_bi(0 A: Type 0, 0 B: Type 0, 1 a: A, 1 b: B) -> Bi(A, B) {
+                Bi { fst: a, snd: b }
+            }
+            fn mk_tagged() -> Tagged(zero) { Tagged(zero) { val: zero } }
+            fn dup_enum(0 A: Type 0, ω x: A) -> PairE(A) { PairE::Both(x, x) }
+            fn dup_struct(0 A: Type 0, ω x: A) -> Pt(A) { Pt { x: x, y: x } }
+            fn let_in_enum(0 A: Type 0, ω x: A) -> OptMany(Sigma(1 _: A, A)) {
+                OptMany::Some({ let ω y: A = x; (y, y) })
+            }
+            fn let_in_struct(0 A: Type 0, ω x: A) -> Pt(Sigma(1 _: A, A)) {
+                Pt { x: { let ω y: A = x; (y, y) }, y: (x, x) }
+            }
+            fn dup_in_match(0 A: Type 0, 1 o: OptMany(A), ω d: A) -> Pt(A) {
+                match o {
+                    OptMany::None => { let ω z: A = d; Pt { x: z, y: z } },
+                    OptMany::Some(v) => Pt { x: v, y: v },
+                }
+            }
+            fn dup_nat_pat(1 o: OptMany(Nat)) -> Nat {
+                match o {
+                    OptMany::None => zero,
+                    OptMany::Some(n) => add(n, n),
+                }
+            }
+            fn dup_fn_pat(0 A: Type 0, 1 fb: FnBox(A), 1 x: A) -> A {
+                match fb { FnBox::Mk(f) => f(f(x)) }
+            }
+        ";
+        let emitted = compile_source(src);
+        assert!(emitted.is_ok(), "unexpected error: {:?}", emitted.err());
+        if let Ok(code) = emitted {
+            assert!(code.contains("pub struct Bi<A, B>"));
+            assert!(code.contains("-> Bi<A, B>"));
+            assert!(code.contains("pub struct Tagged {\n    pub val: u128,\n}"));
+            assert!(code.contains("pub fn mk_tagged() -> Tagged"));
+            assert!(code.contains("pub enum GhostEnum {\n    Mk(u128),\n}"));
+            assert!(code.contains("pub struct GhostStruct {\n    pub v: u128,\n}"));
+            assert!(code.contains("PairE::Both(x.clone(), x)"));
+            assert!(code.contains("Pt { x: x.clone(), y: x }"));
+            assert!(code.contains("pub fn let_in_enum<A: Clone>(x: A)"));
+            assert!(code.contains("(v1.clone(), v1)"));
+            assert!(code.contains("pub fn let_in_struct<A: Clone>(x: A)"));
+            assert!(code.contains(
+                "        OptMany::None => {\n            let v2: A = d;\n            Pt { x: v2.clone(), y: v2 }\n        },\n        OptMany::Some(v3) => Pt { x: v3.clone(), y: v3 },"
+            ));
+            assert!(code.contains("OptMany::Some(v1) => add(v1, v1),"));
+            assert!(code.contains("FnBox::Mk(v2) => v2(v2(x)),"));
+        }
+    }
+
+    #[test]
+    fn extracts_recursive_helpers_multi_rec_and_ih_cloning() {
+        let src = r"
+            fn add(1 n: Nat, 1 m: Nat) -> Nat {
+                match n { zero => m, succ(_, acc) => succ(acc) }
+            }
+            enum List(0 A: Type 0) {
+                Nil,
+                Cons(ω head: A, ω tail: List(A)),
+            }
+            enum Tree(0 A: Type 0) {
+                Leaf,
+                Node(1 left: Tree(A), ω val: A, ω right: Tree(A)),
+            }
+            fn append(0 A: Type 0, 1 xs: List(A), ω ys: List(A)) -> List(A) {
+                match xs {
+                    List::Nil => ys,
+                    List::Cons(h, _, ih) => List::Cons(h, ih),
+                }
+            }
+            fn nil_let_rec(1 xs: List(Nat)) -> Nat {
+                match xs {
+                    List::Nil => { let 1 z: Nat = zero; z },
+                    List::Cons(h, _, ih) => add(h, ih),
+                }
+            }
+            fn two_recs(1 a: List(Nat), 1 b: List(Nat)) -> Nat {
+                add(
+                    match a { List::Nil => zero, List::Cons(h, _, ih) => add(h, ih) },
+                    match b { List::Nil => zero, List::Cons(h, _, ih) => add(h, ih) },
+                )
+            }
+            fn after_rec(1 xs: List(Nat), 1 y: Nat) -> Nat {
+                let 1 r: Nat = match xs {
+                    List::Nil => zero,
+                    List::Cons(h, _, ih) => add(h, ih),
+                };
+                add(r, y)
+            }
+            fn tree_leaves(0 A: Type 0, 1 t: Tree(A), ω d: A) -> List(A) {
+                match t {
+                    Tree::Leaf => List::Cons(d, List::Nil),
+                    Tree::Node(_, _, _, ihl, ihr) => append(A, ihl, ihr),
+                }
+            }
+            fn dup_byval_cap(0 A: Type 0, 1 xs: List(A), ω ys: List(A)) -> List(A) {
+                let 1 r: List(A) = match xs {
+                    List::Nil => ys,
+                    List::Cons(h, _, ih) => List::Cons(h, ih),
+                };
+                append(A, r, ys)
+            }
+            fn dup_ih_list(0 A: Type 0, 1 xs: List(A)) -> List(A) {
+                match xs {
+                    List::Nil => List::Nil,
+                    List::Cons(_, _, ih) => append(A, ih, ih),
+                }
+            }
+            fn dup_ih_nat(1 xs: List(Nat)) -> Nat {
+                match xs {
+                    List::Nil => zero,
+                    List::Cons(_, _, ih) => add(ih, ih),
+                }
+            }
+        ";
+        let emitted = compile_source(src);
+        assert!(emitted.is_ok(), "unexpected error: {:?}", emitted.err());
+        if let Ok(code) = emitted {
+            assert!(code.contains(
+                "            List::Nil => {\n                let v1: u128 = 0_u128;\n                v1\n            },"
+            ));
+            assert!(code.contains("fn __apollo_rec_0(scrut: List<u128>)"));
+            assert!(code.contains("fn __apollo_rec_1(scrut: List<u128>)"));
+            assert!(code.contains("add(v5, y)"));
+            assert!(code.contains("d: &A"));
+            assert!(code.contains("d.clone()"));
+            assert!(code.contains("__apollo_rec_0(xs, ys.clone())"));
+            assert!(code.contains("append(v3.clone(), v3)"));
+            assert!(code.contains("add(v3, v3)"));
         }
     }
 }

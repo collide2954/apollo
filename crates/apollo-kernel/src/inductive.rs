@@ -833,4 +833,81 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn mentions_and_uniform_rec_checks_handle_all_data_and_hcom_forms() {
+        use crate::term::CofTerm;
+
+        let mut arena = TermArena::new();
+        let opt_id = define_option(&mut arena);
+        let u0 = arena.universe(Level::constant(0));
+        let nat = arena.nat();
+        let zero = arena.zero();
+        let v0 = arena.var(Index(0));
+
+        // Wrapper(0 A: Type 0) { Wrap(1 x: Option(A)) } shares param_count == 1 with Option,
+        // but must NOT be marked as a recursive self-reference.
+        let opt_a = arena.data(opt_id, vec![v0]);
+        let wrap_id = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: vec![ParamDecl {
+                    mult: Multiplicity::Zero,
+                    ty: u0,
+                }],
+                level: Level::constant(0),
+                ctors: vec![CtorDecl {
+                    fields: vec![FieldDecl {
+                        mult: Multiplicity::One,
+                        ty: opt_a,
+                        is_recursive: false,
+                    }],
+                }],
+            },
+        );
+        assert!(wrap_id.is_ok());
+        if let Ok(wid) = wrap_id {
+            let decl = arena.get_inductive(wid);
+            assert!(decl.is_some());
+            if let Some(d) = decl {
+                assert!(!d.ctors[0].fields[0].is_recursive);
+            }
+        }
+
+        let target = InductiveId(7);
+        let other = InductiveId(8);
+        let t_data = arena.data(target, Vec::new());
+
+        // Term::Ctor cases: self id, in params, in args, and none.
+        let c_self = arena.ctor(target, 0, Vec::new(), Vec::new());
+        let c_param = arena.ctor(other, 0, vec![t_data], Vec::new());
+        let c_arg = arena.ctor(other, 0, Vec::new(), vec![t_data]);
+        let c_none = arena.ctor(other, 0, vec![nat], vec![zero]);
+        assert!(term_mentions_inductive(&arena, c_self, target));
+        assert!(term_mentions_inductive(&arena, c_param, target));
+        assert!(term_mentions_inductive(&arena, c_arg, target));
+        assert!(!term_mentions_inductive(&arena, c_none, target));
+
+        // Term::DataElim cases: self id, in motive, in params, in branches, and none.
+        let e_self = arena.data_elim(target, Vec::new(), nat, Vec::new(), zero);
+        let e_mot = arena.data_elim(other, Vec::new(), t_data, Vec::new(), zero);
+        let e_par = arena.data_elim(other, vec![t_data], nat, Vec::new(), zero);
+        let e_br = arena.data_elim(other, Vec::new(), nat, vec![t_data], zero);
+        let e_none = arena.data_elim(other, vec![nat], nat, vec![zero], zero);
+        assert!(term_mentions_inductive(&arena, e_self, target));
+        assert!(term_mentions_inductive(&arena, e_mot, target));
+        assert!(term_mentions_inductive(&arena, e_par, target));
+        assert!(term_mentions_inductive(&arena, e_br, target));
+        assert!(!term_mentions_inductive(&arena, e_none, target));
+
+        // Term::HCom cases: mention in ty only vs in tube branch only.
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let h_ty = arena.hcom(t_data, d0, d1, Vec::new(), zero);
+        let h_tube = arena.hcom(nat, d0, d1, vec![(CofTerm::Top, t_data)], zero);
+        let h_none = arena.hcom(nat, d0, d1, vec![(CofTerm::Top, zero)], zero);
+        assert!(term_mentions_inductive(&arena, h_ty, target));
+        assert!(term_mentions_inductive(&arena, h_tube, target));
+        assert!(!term_mentions_inductive(&arena, h_none, target));
+    }
 }

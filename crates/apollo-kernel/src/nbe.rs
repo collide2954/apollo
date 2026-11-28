@@ -2403,4 +2403,194 @@ mod tests {
             assert_eq!(conv(&arena, 1, &va, &vb), Ok(false));
         }
     }
+
+    #[test]
+    fn evaluates_coerces_and_converts_data_edge_cases() {
+        use super::{Closure, TypeLine, coe_line};
+        use crate::cubical::Dim;
+        use crate::inductive::{
+            CtorDecl, FieldDecl, InductiveDecl, InductiveId, ParamDecl, check_and_define_inductive,
+        };
+
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::constant(0));
+        let nat = arena.nat();
+        let bool_ty = arena.bool_ty();
+        let zero = arena.zero();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+
+        let opt_id = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: vec![ParamDecl {
+                    mult: Multiplicity::Zero,
+                    ty: u0,
+                }],
+                level: Level::constant(0),
+                ctors: vec![
+                    CtorDecl { fields: Vec::new() },
+                    CtorDecl {
+                        fields: vec![FieldDecl {
+                            mult: Multiplicity::One,
+                            ty: v0,
+                            is_recursive: false,
+                        }],
+                    },
+                ],
+            },
+        );
+        let self_list = arena.data(InductiveId(1), vec![v1]);
+        let list_id = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: vec![ParamDecl {
+                    mult: Multiplicity::Zero,
+                    ty: u0,
+                }],
+                level: Level::constant(0),
+                ctors: vec![
+                    CtorDecl { fields: Vec::new() },
+                    CtorDecl {
+                        fields: vec![
+                            FieldDecl {
+                                mult: Multiplicity::One,
+                                ty: v0,
+                                is_recursive: false,
+                            },
+                            FieldDecl {
+                                mult: Multiplicity::One,
+                                ty: self_list,
+                                is_recursive: false,
+                            },
+                        ],
+                    },
+                ],
+            },
+        );
+        assert!(opt_id.is_ok() && list_id.is_ok());
+        let (Ok(opt_id), Ok(list_id)) = (opt_id, list_id) else {
+            return;
+        };
+
+        // eval_data_elim with mismatched constructor inductive id must not reduce.
+        let nil_nat = arena.ctor(list_id, 0, vec![nat], Vec::new());
+        let mis_elim = arena.data_elim(opt_id, vec![nat], nat, vec![zero, v0], nil_nat);
+        assert!(matches!(
+            eval(&arena, &[], mis_elim),
+            Ok(Value::Ctor { id, .. }) if id == list_id
+        ));
+
+        // coe_line on parameterized Data must remain neutral.
+        let opt_nat = arena.data(opt_id, vec![nat]);
+        let line = TypeLine::Closure(Closure::new(Vec::new(), opt_nat));
+        let coerced = coe_line(&arena, &line, Dim::Zero, Dim::One, Value::Zero);
+        assert!(matches!(coerced, Ok(Value::Neutral(_))));
+
+        // conv_data_value: same id + diff params, and diff id + same params.
+        let opt_bool = arena.data(opt_id, vec![bool_ty]);
+        let list_nat = arena.data(list_id, vec![nat]);
+        if let (Ok(v_on), Ok(v_ob), Ok(v_ln)) = (
+            eval(&arena, &[], opt_nat),
+            eval(&arena, &[], opt_bool),
+            eval(&arena, &[], list_nat),
+        ) {
+            assert_eq!(conv(&arena, 0, &v_on, &v_ob), Ok(false));
+            assert_eq!(conv(&arena, 0, &v_on, &v_ln), Ok(false));
+        }
+
+        // Different inductive id with equal branch count (2 vs 2) must not convert.
+        let env1 = vec![Value::var(DeBruijnLevel(0))];
+        let opt_e = arena.data_elim(opt_id, vec![nat], nat, vec![zero, zero], v0);
+        let list_e = arena.data_elim(list_id, vec![nat], nat, vec![zero, zero], v0);
+        if let (Ok(vo), Ok(vl)) = (eval(&arena, &env1, opt_e), eval(&arena, &env1, list_e)) {
+            assert_eq!(conv(&arena, 1, &vo, &vl), Ok(false));
+        }
+    }
+
+    #[test]
+    fn quotes_and_converts_multi_binder_data_elim_at_depths() {
+        use crate::inductive::{
+            CtorDecl, FieldDecl, InductiveDecl, InductiveId, ParamDecl, check_and_define_inductive,
+        };
+
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::constant(0));
+        let nat = arena.nat();
+        let zero = arena.zero();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+
+        let self_list = arena.data(InductiveId(0), vec![v1]);
+        let list_id = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: vec![ParamDecl {
+                    mult: Multiplicity::Zero,
+                    ty: u0,
+                }],
+                level: Level::constant(0),
+                ctors: vec![
+                    CtorDecl { fields: Vec::new() },
+                    CtorDecl {
+                        fields: vec![
+                            FieldDecl {
+                                mult: Multiplicity::One,
+                                ty: v0,
+                                is_recursive: false,
+                            },
+                            FieldDecl {
+                                mult: Multiplicity::One,
+                                ty: self_list,
+                                is_recursive: false,
+                            },
+                        ],
+                    },
+                ],
+            },
+        );
+        assert!(list_id.is_ok());
+        let Ok(list_id) = list_id else {
+            return;
+        };
+
+        // Quote multi-binder Cons branch at depth 3.
+        let env3 = vec![
+            Value::var(DeBruijnLevel(0)),
+            Value::var(DeBruijnLevel(1)),
+            Value::var(DeBruijnLevel(2)),
+        ];
+        let list_elim_3 = arena.data_elim(list_id, vec![nat], nat, vec![zero, v0], v0);
+        if let Ok(vl3) = eval(&arena, &env3, list_elim_3) {
+            assert_eq!(quote(&mut arena, 3, &vl3), Ok(list_elim_3));
+        }
+
+        // Depth 1: Cons binds levels 1 (head=v2), 2 (tail=v1), 3 (ih=v0); env0 is level 0 (v3).
+        let env1 = vec![Value::var(DeBruijnLevel(0))];
+        let lam_v0 = arena.lam(Multiplicity::One, v0);
+        let lam_v1 = arena.lam(Multiplicity::One, v1);
+        let le_head = arena.data_elim(list_id, vec![nat], nat, vec![zero, v2], v0);
+        let le_env0 = arena.data_elim(list_id, vec![nat], nat, vec![zero, v3], v0);
+        let le_lam0 = arena.data_elim(list_id, vec![nat], nat, vec![zero, lam_v0], v0);
+        let le_lam1 = arena.data_elim(list_id, vec![nat], nat, vec![zero, lam_v1], v0);
+        if let (Ok(a), Ok(b), Ok(c), Ok(d)) = (
+            eval(&arena, &env1, le_head),
+            eval(&arena, &env1, le_env0),
+            eval(&arena, &env1, le_lam0),
+            eval(&arena, &env1, le_lam1),
+        ) {
+            assert_eq!(conv(&arena, 1, &a, &b), Ok(false));
+            assert_eq!(conv(&arena, 1, &c, &d), Ok(false));
+        }
+
+        // Depth 2: Cons binds levels 2 (head=v2), 3 (tail=v1), 4 (ih=v0); env1 is level 1 (v3).
+        let env2 = vec![Value::var(DeBruijnLevel(0)), Value::var(DeBruijnLevel(1))];
+        let le_tail = arena.data_elim(list_id, vec![nat], nat, vec![zero, v1], v0);
+        let le_env1 = arena.data_elim(list_id, vec![nat], nat, vec![zero, v3], v0);
+        if let (Ok(a), Ok(b)) = (eval(&arena, &env2, le_tail), eval(&arena, &env2, le_env1)) {
+            assert_eq!(conv(&arena, 2, &a, &b), Ok(false));
+        }
+    }
 }

@@ -1289,6 +1289,8 @@ mod tests {
             "struct S { 1 x: Nat } fn f(1 s: S) -> Nat { match s { S { y } => y } }",
             "struct S { 1 x: Nat } fn f(1 s: S) -> Nat { match s { S { x, x } => x } }",
             "struct S { 1 x: Nat, 1 y: Nat } fn f(1 s: S) -> Nat { match s { S { x } => x } }",
+            "enum E1 { A } enum E2 { A } fn f(1 e: E1) -> Nat { match e { E2::A => zero } }",
+            "struct S1 { 1 x: Nat } struct S2 { 1 x: Nat } fn f(1 s: S1) -> Nat { match s { S2 { x } => x } }",
         ] {
             assert!(
                 matches!(
@@ -1298,5 +1300,59 @@ mod tests {
                 "expected InvalidMatch for: {bad_match}"
             );
         }
+
+        // Duplicate data name and fn/data collision.
+        for dup in [
+            "enum E { A } enum E { B }",
+            "fn E() -> Nat { zero } enum E { A }",
+        ] {
+            assert!(matches!(
+                check_source(dup).err(),
+                Some(ElabError::DuplicateDecl { .. })
+            ));
+        }
+
+        // Expected data type mismatch with same parameter count.
+        assert!(matches!(
+            check_source(
+                "enum A(0 T: Type 0) { Mk } enum B(0 T: Type 0) { Mk } fn f() -> A(Nat) { B::Mk }"
+            )
+            .err(),
+            Some(ElabError::InvalidData { .. })
+        ));
+
+        // Scope cleanup after data params, struct fields, and multi-binder match branches.
+        for leaked in [
+            "enum E(0 A: Type 0) { Mk(1 _: A) } fn f() -> Type 0 { A }",
+            "struct S { 1 x: Nat } fn f() -> Nat { x }",
+            "enum List(0 A: Type 0) { Nil, Cons(ω h: A, 1 t: List(A)) } fn f(1 xs: List(Nat)) -> Nat { match xs { List::Nil => zero, List::Cons(h, _, ih) => ih } } fn after() -> Nat { h }",
+        ] {
+            assert!(
+                matches!(
+                    check_source(leaked).err(),
+                    Some(ElabError::UnknownName { .. })
+                ),
+                "expected UnknownName for: {leaked}"
+            );
+        }
+
+        // Explicit constructor type args, second struct field projection, and 2-IH Tree recursion.
+        let ok_extra = r"
+            fn add(1 n: Nat, 1 m: Nat) -> Nat {
+                match n { zero => m, succ(_, acc) => succ(acc) }
+            }
+            enum Option(0 A: Type 0) { None, Some(1 val: A) }
+            struct Hetero { ω a: Nat, ω b: Bool }
+            enum Tree(0 A: Type 0) { Leaf, Node(1 l: Tree(A), 1 v: A, 1 r: Tree(A)) }
+            fn explicit_some() -> Option(Nat) { Option::Some(Nat, zero) }
+            fn get_b(ω h: Hetero) -> Bool { h.b }
+            fn tree_sum(1 t: Tree(Nat)) -> Nat {
+                match t {
+                    Tree::Leaf => zero,
+                    Tree::Node(_, v, _, ihl, ihr) => add(v, add(ihl, ihr)),
+                }
+            }
+        ";
+        assert!(check_source(ok_extra).is_ok());
     }
 }

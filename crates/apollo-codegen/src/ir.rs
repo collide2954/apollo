@@ -1425,4 +1425,99 @@ mod tests {
         func.write_to(&mut out);
         assert!(!out.contains(".clone()"));
     }
+
+    #[test]
+    fn rec_data_match_does_not_clone_or_annotate_callable_ih() {
+        use super::{RustMatchPat, RustPatBinder, RustRecArm};
+
+        let callable_ty = RustType::Callable {
+            kind: FnKind::Fn,
+            params: vec![RustType::Nat],
+            ret: Box::new(RustType::Nat),
+        };
+        let list_ty = RustType::Data {
+            name: "List".to_owned(),
+            args: vec![RustType::Nat],
+        };
+        let mut func = RustFn {
+            name: "fold_fn".to_owned(),
+            type_params: Vec::new(),
+            clone_bounds: BTreeSet::new(),
+            params: vec![
+                RustParam {
+                    id: 0,
+                    name: "xs".to_owned(),
+                    ty: list_ty.clone(),
+                },
+                RustParam {
+                    id: 1,
+                    name: "f".to_owned(),
+                    ty: callable_ty.clone(),
+                },
+            ],
+            ret_ty: callable_ty.clone(),
+            body: RustExpr::RecDataMatch {
+                helper_name: "__apollo_rec_0".to_owned(),
+                type_params: Vec::new(),
+                clone_bounds: BTreeSet::new(),
+                scrut_ty: list_ty.clone(),
+                ret_ty: callable_ty,
+                captures: Vec::new(),
+                scrut: Box::new(RustExpr::Local {
+                    id: 0,
+                    name: "xs".to_owned(),
+                }),
+                arms: vec![
+                    RustRecArm {
+                        pat: RustMatchPat::Enum {
+                            enum_name: "List".to_owned(),
+                            variant_name: "Nil".to_owned(),
+                            binders: Vec::new(),
+                        },
+                        rec_bindings: Vec::new(),
+                        body: RustExpr::Local {
+                            id: 1,
+                            name: "f".to_owned(),
+                        },
+                    },
+                    RustRecArm {
+                        pat: RustMatchPat::Enum {
+                            enum_name: "List".to_owned(),
+                            variant_name: "Cons".to_owned(),
+                            binders: vec![RustPatBinder {
+                                id: 2,
+                                name: "t".to_owned(),
+                                ty: list_ty,
+                            }],
+                        },
+                        rec_bindings: vec![(3, "ih".to_owned(), 2, "t".to_owned())],
+                        body: RustExpr::Closure {
+                            params: vec![(4, "x".to_owned())],
+                            body: Box::new(RustExpr::Call {
+                                callee: Box::new(RustExpr::Local {
+                                    id: 3,
+                                    name: "ih".to_owned(),
+                                }),
+                                args: vec![RustExpr::Call {
+                                    callee: Box::new(RustExpr::Local {
+                                        id: 3,
+                                        name: "ih".to_owned(),
+                                    }),
+                                    args: vec![RustExpr::Local {
+                                        id: 4,
+                                        name: "x".to_owned(),
+                                    }],
+                                }],
+                            }),
+                        },
+                    },
+                ],
+            },
+        };
+        func.finalize_ownership();
+        let mut out = String::new();
+        func.write_to(&mut out);
+        assert!(!out.contains(".clone()"));
+        assert!(out.contains("let ih = __apollo_rec_0(*t);"));
+    }
 }

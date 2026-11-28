@@ -1307,6 +1307,17 @@ mod tests {
         assert!(parse_expr("Option::Some(zero)").is_ok());
         assert!(parse_expr("Option::None").is_ok());
         assert!(parse_expr("match (Point { x: zero, y: zero }) { Point { x, y } => x }").is_ok());
+        assert!(matches!(
+            parse_expr("Point(Nat) { x: zero, y: succ(zero) }"),
+            Ok(crate::Expr {
+                kind: ExprKind::StructLit {
+                    ref type_name,
+                    ref type_args,
+                    ref fields,
+                },
+                ..
+            }) if type_name == "Point" && type_args.len() == 1 && fields.len() == 2
+        ));
     }
 
     #[test]

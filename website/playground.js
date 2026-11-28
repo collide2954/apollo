@@ -220,6 +220,42 @@ fn sum_upair(1 p: UPair(Nat)) -> Nat {
 }
 `,
   },
+  auto: {
+    label: "Proof Automation with auto",
+    code: `// auto finds a proof term and the kernel checks it again.
+theorem add_comm(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, a + b, b + a) {
+    auto
+}
+
+theorem add_assoc(0 a: Nat, 0 b: Nat, 0 c: Nat) -> Path(_ => Nat, (a + b) + c, a + (b + c)) {
+    auto
+}
+
+// Congruence closure uses the Path hypotheses in scope.
+theorem rewrite_under_map(
+    0 A: Type 0,
+    0 f: (ω _: Nat) -> A,
+    0 a: Nat,
+    0 b: Nat,
+    0 p: Path(_ => Nat, a + b, b),
+) -> Path(_ => A, f(b + a), f(b)) {
+    auto
+}
+
+// Quotient extraction with an automatic symmetry proof.
+enum UPair(0 A: Type 0) {
+    Pair(1 a: A, 1 b: A),
+    Swap(1 a: A, 1 b: A, <i>) = UPair::Pair(a, b) .. UPair::Pair(b, a),
+}
+
+fn sum_upair(1 p: UPair(Nat)) -> Nat {
+    match p {
+        UPair::Pair(a, b) => a + b,
+        UPair::Swap(a, b, i) => add_comm(a, b) @ i,
+    }
+}
+`,
+  },
 };
 
 function encodeBase64Url(text) {

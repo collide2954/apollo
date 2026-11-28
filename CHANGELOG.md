@@ -5,6 +5,19 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add the built-in `+` operator on `Nat` with one canonical `nat_elim` elaboration.
+- Add the `auto` tactic with proof-producing congruence closure and linear `Nat` normalization in `apollo-auto`.
+- Add kernel re-checks for all `auto` proof terms and error reports that show both normal forms.
+- Add expected type propagation into `Sigma` pairs in `apollo-elab`.
+- Add `examples/auto.ap`, `docs/proof-automation.md`, and the `auto` playground preset.
+
+### Fixed
+
+- Put parentheses around block expressions in the range of extracted `Nat` loops in `apollo-codegen`.
+- Close 12 mutation test gaps in HIT binder scopes, boundary depths, and quotes.
+
 ## [0.11.0] - 2026-11-27
 
 ### Added

@@ -23,6 +23,10 @@ Use these exact terms consistently in all documentation files.
 - **Proof Artifact**: A content-addressed `.aplc` file that the kernel checks independently.
 - **Transactional Proof State**: An immutable in-memory proof state that supports parallel speculative branching.
 - **e-graph**: A data structure that stores equivalence classes of terms for equality saturation.
+- **Congruence Closure**: A procedure that merges two applications when their heads and arguments have equal classes.
+- **Proof Forest**: A record of the reason for each e-graph merge that lets a tactic rebuild a proof term.
+- **Normal Form**: A sorted sum of atoms plus a constant that the `auto` tactic gives to each `Nat` sum.
+- **Tactic**: A procedure in the elaborator that builds a proof term for a goal.
 
 ## Architecture Terms
 

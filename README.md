@@ -25,6 +25,7 @@ Apollo supports macOS, Linux, and Windows.
 - `crates/apollo-codegen`: Erases proofs and emits Rust source code.
 - `crates/apollo-lsp`: Serves editor and machine-readable proof interfaces.
 - `crates/apollo-cli`: Gives the `apollo` binary.
+- `crates/apollo-wasm`: Compiles the checker and Rust extractor to WebAssembly with zero unsafe code.
 - `xtask`: Runs cross-platform quality checks and documentation checks.
 
 ## Usage

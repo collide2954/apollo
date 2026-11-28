@@ -1,6 +1,7 @@
 /target/
 /mutants.out/
 /mutants.out.old/
+/website/apollo-wasm.wasm
 *.profraw
 *.profdata
 .DS_Store

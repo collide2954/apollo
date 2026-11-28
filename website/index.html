@@ -35,7 +35,7 @@
     <section class="hero">
       <div class="container hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow">VERSION 0.8.0 · APACHE-2.0 · MACOS / LINUX / WINDOWS</p>
+          <p class="eyebrow">VERSION 0.9.0 · APACHE-2.0 · MACOS / LINUX / WINDOWS / WASM</p>
           <h1>Prove properties. Emit sound Rust.</h1>
           <p class="lead">
             Apollo is an interactive theorem prover and verified systems language in Rust.
@@ -107,7 +107,7 @@
     <section id="crates" class="section alt">
       <div class="container">
         <p class="eyebrow">MODULAR WORKSPACE</p>
-        <h2>Eight crates with strict boundaries</h2>
+        <h2>Nine crates with strict boundaries</h2>
         <div class="table-wrap">
           <table>
             <thead>
@@ -149,6 +149,10 @@
                 <td><code>apollo-cli</code></td>
                 <td>Gives the unified <code>apollo</code> command-line interface.</td>
               </tr>
+              <tr>
+                <td><code>apollo-wasm</code></td>
+                <td>Compiles the checker and Rust extractor to WebAssembly with zero unsafe code.</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -156,16 +160,52 @@
     </section>
 
     <section id="playground" class="section">
-      <div class="container playground-box">
-        <div>
-          <p class="eyebrow">WEBASSEMBLY TARGET</p>
-          <h2>Interactive browser playground</h2>
-          <p>
-            The zero-dependency <code>apollo-kernel</code>, <code>apollo-syntax</code>, <code>apollo-elab</code>, and <code>apollo-codegen</code> crates target <code>wasm32-unknown-unknown</code>.
-            Run <code>apollo check</code> and <code>apollo build</code> locally today, or watch this page for the browser build.
-          </p>
+      <div class="container">
+        <p class="eyebrow">WEBASSEMBLY PLAYGROUND</p>
+        <h2>Check proofs and extract Rust in your browser</h2>
+        <p class="lead">
+          The browser runs <code>apollo-wasm.wasm</code> locally with zero server calls.
+          Select an example, edit the Apollo source, and press <code>Ctrl+Enter</code> to extract <code>#![no_std]</code> Rust.
+        </p>
+
+        <div class="pg-shell">
+          <div class="pg-toolbar">
+            <label class="pg-select-wrap" for="pg-preset">
+              <span>Example</span>
+              <select id="pg-preset" aria-label="Choose an Apollo example"></select>
+            </label>
+            <div class="pg-actions">
+              <button id="pg-check" class="button secondary" type="button">Check</button>
+              <button id="pg-build" class="button primary" type="button">Build Rust</button>
+              <button id="pg-omega" class="button secondary" type="button" title="Insert unrestricted multiplicity symbol">Insert ω</button>
+              <button id="pg-copy" class="button secondary" type="button">Copy Output</button>
+              <button id="pg-share" class="button secondary" type="button">Share Link</button>
+            </div>
+          </div>
+
+          <div class="pg-grid">
+            <div class="pg-pane">
+              <div class="code-head">
+                <span>playground.ap</span>
+                <span>APOLLO SOURCE</span>
+              </div>
+              <textarea id="pg-source" class="pg-editor" spellcheck="false" aria-label="Apollo source code editor"></textarea>
+            </div>
+
+            <div class="pg-pane">
+              <div class="code-head">
+                <span>output.rs</span>
+                <span id="pg-status" class="pg-badge loading">LOADING WASM</span>
+              </div>
+              <pre id="pg-output" class="pg-output" aria-live="polite">Loading apollo-wasm.wasm...</pre>
+            </div>
+          </div>
+
+          <div class="pg-footer">
+            <span id="pg-meta">Initializing WebAssembly module...</span>
+            <span>Shortcut: <code>Ctrl+Enter</code> / <code>Cmd+Enter</code></span>
+          </div>
         </div>
-        <div class="status-pill">VERSION 0.8.0 · CUSTOM ADTS</div>
       </div>
     </section>
   </main>
@@ -178,9 +218,10 @@
         ·
         <a href="https://github.com/collide2954/apollo/blob/main/CHANGELOG.md">Changelog</a>
         ·
-        <a href="https://github.com/collide2954/type-theory-is-easy">Type Theory Is Easy</a>
+        <a href="https://collide2954.github.io/type-theory-is-easy/">Type Theory Is Easy</a>
       </p>
     </div>
   </footer>
+  <script type="module" src="playground.js"></script>
 </body>
 </html>

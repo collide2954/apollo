@@ -5,6 +5,18 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-27
+
+### Added
+
+- Add `apollo-wasm` crate for `wasm32-wasip1` proof checking and Rust extraction with zero external dependencies and zero `unsafe` code.
+- Add the interactive browser playground, WASI preview 1 runner, preset examples, and share links to the Apollo website.
+- Update GitHub Pages deployment to compile `apollo-wasm.wasm` automatically.
+
+### Changed
+
+- Close all user-defined ADT mutation test gaps across `apollo-syntax`, `apollo-kernel`, `apollo-elab`, and `apollo-codegen`.
+
 ## [0.8.0] - 2026-11-27
 
 ### Added

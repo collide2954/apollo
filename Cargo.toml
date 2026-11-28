@@ -9,6 +9,7 @@ members = [
     "crates/apollo-lsp",
     "crates/apollo-query",
     "crates/apollo-syntax",
+    "crates/apollo-wasm",
     "xtask",
 ]
 default-members = [
@@ -20,10 +21,11 @@ default-members = [
     "crates/apollo-lsp",
     "crates/apollo-query",
     "crates/apollo-syntax",
+    "crates/apollo-wasm",
 ]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/collide2954/apollo"
@@ -52,7 +54,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [workspace.dependencies]
-apollo-codegen = { version = "0.8.0", path = "crates/apollo-codegen" }
-apollo-elab = { version = "0.8.0", path = "crates/apollo-elab" }
-apollo-kernel = { version = "0.8.0", path = "crates/apollo-kernel" }
-apollo-syntax = { version = "0.8.0", path = "crates/apollo-syntax" }
+apollo-codegen = { version = "0.9.0", path = "crates/apollo-codegen" }
+apollo-elab = { version = "0.9.0", path = "crates/apollo-elab" }
+apollo-kernel = { version = "0.9.0", path = "crates/apollo-kernel" }
+apollo-syntax = { version = "0.9.0", path = "crates/apollo-syntax" }

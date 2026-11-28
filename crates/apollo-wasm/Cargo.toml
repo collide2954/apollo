@@ -1,0 +1,19 @@
+[package]
+name = "apollo-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "apollo-wasm"
+path = "src/main.rs"
+
+[dependencies]
+apollo-codegen.workspace = true
+apollo-elab.workspace = true
+apollo-kernel.workspace = true
+apollo-syntax.workspace = true
+
+[lints]
+workspace = true

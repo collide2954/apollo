@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      - "crates/apollo-wasm/**"
+      - "crates/apollo-kernel/**"
+      - "crates/apollo-syntax/**"
+      - "crates/apollo-elab/**"
+      - "crates/apollo-codegen/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -22,6 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build Apollo WebAssembly module
+        run: |
+          cargo build --release --target wasm32-wasip1 -p apollo-wasm
+          cp target/wasm32-wasip1/release/apollo-wasm.wasm website/apollo-wasm.wasm
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "apollo-auto"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "apollo-kernel",
 ]
 
 [[package]]
 name = "apollo-cli"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "apollo-codegen",
  "apollo-elab",
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "apollo-codegen"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "apollo-elab",
  "apollo-kernel",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "apollo-elab"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "apollo-auto",
  "apollo-kernel",
@@ -38,23 +38,23 @@ dependencies = [
 
 [[package]]
 name = "apollo-kernel"
-version = "0.11.0"
+version = "0.12.0"
 
 [[package]]
 name = "apollo-lsp"
-version = "0.11.0"
+version = "0.12.0"
 
 [[package]]
 name = "apollo-query"
-version = "0.11.0"
+version = "0.12.0"
 
 [[package]]
 name = "apollo-syntax"
-version = "0.11.0"
+version = "0.12.0"
 
 [[package]]
 name = "apollo-wasm"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "apollo-codegen",
  "apollo-elab",
@@ -64,4 +64,4 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.11.0"
+version = "0.12.0"

@@ -5,6 +5,8 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-28
+
 ### Added
 
 - Add the built-in `+` operator on `Nat` with one canonical `nat_elim` elaboration.

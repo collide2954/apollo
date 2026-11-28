@@ -1004,6 +1004,11 @@ mod tests {
         assert!(term_mentions_inductive(&arena, c_arg, target));
         assert!(!term_mentions_inductive(&arena, c_none, target));
 
+        let d_param = arena.data(other, vec![t_data]);
+        let d_none = arena.data(other, vec![nat]);
+        assert!(term_mentions_inductive(&arena, d_param, target));
+        assert!(!term_mentions_inductive(&arena, d_none, target));
+
         // Term::DataElim cases: self id, in motive, in params, in branches, and none.
         let e_self = arena.data_elim(target, Vec::new(), nat, Vec::new(), zero);
         let e_mot = arena.data_elim(other, Vec::new(), t_data, Vec::new(), zero);

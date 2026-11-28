@@ -2884,4 +2884,58 @@ mod tests {
             assert_eq!(conv(&arena, 2, &a, &b), Ok(false));
         }
     }
+
+    #[test]
+    fn quotes_hit_data_elim_with_only_last_path_binder_as_dimension() {
+        use crate::inductive::{CtorDecl, FieldDecl, InductiveDecl, InductiveId, PathBoundary};
+
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::constant(0));
+        let bool_ty = arena.bool_ty();
+        let unit = arena.unit();
+        let tt = arena.tt();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let id = InductiveId(0);
+        let field = FieldDecl {
+            mult: Multiplicity::One,
+            ty: bool_ty,
+            is_recursive: false,
+        };
+        let left = arena.ctor(id, 0, Vec::new(), vec![v1, v0]);
+        let right = arena.ctor(id, 0, Vec::new(), vec![v0, v1]);
+        arena.push_inductive_raw(InductiveDecl {
+            params: Vec::new(),
+            level: Level::constant(0),
+            ctors: vec![
+                CtorDecl {
+                    fields: vec![field.clone(), field.clone()],
+                    boundary: None,
+                },
+                CtorDecl {
+                    fields: vec![field.clone(), field],
+                    boundary: Some(PathBoundary { left, right }),
+                },
+            ],
+        });
+
+        let p0 = arena.v_type(v0, bool_ty, unit, tt);
+        let p1 = arena.v_type(v1, bool_ty, unit, tt);
+        let p2 = arena.v_type(v2, bool_ty, unit, tt);
+        let pair_branch = arena.pair(p1, p0);
+        let swap_branch = arena.pair(p2, pair_branch);
+        let elim = arena.data_elim(id, Vec::new(), u0, vec![pair_branch, swap_branch], v0);
+
+        let unit_pair = arena.pair(unit, unit);
+        let swap_tail = arena.pair(unit, p0);
+        let swap_expected = arena.pair(unit, swap_tail);
+        let expected = arena.data_elim(id, Vec::new(), u0, vec![unit_pair, swap_expected], v0);
+
+        let value = eval(&arena, &[Value::var(DeBruijnLevel(0))], elim);
+        assert!(value.is_ok());
+        if let Ok(v) = value {
+            assert_eq!(quote(&mut arena, 1, &v), Ok(expected));
+        }
+    }
 }

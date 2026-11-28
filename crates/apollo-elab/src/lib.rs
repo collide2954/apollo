@@ -1570,4 +1570,55 @@ mod tests {
             Err(ElabError::InvalidData { .. })
         ));
     }
+
+    #[test]
+    fn scopes_hit_binders_and_checks_boundaries_at_field_depth() {
+        let leaked_field = r"
+            enum UPair(0 A: Type 0) {
+                Pair(1 a: A, 1 b: A),
+                Swap(1 a: A, 1 b: A, <i>) = UPair::Pair(a, b) .. UPair::Pair(b, a),
+            }
+            fn after() -> Nat { a }
+        ";
+        assert!(matches!(
+            check_source(leaked_field),
+            Err(ElabError::UnknownName { .. })
+        ));
+
+        let short_binders = r"
+            enum Bin { Leaf, Join(1 l: Bin, 1 r: Bin, <i>) = Bin::Leaf .. Bin::Leaf }
+            fn bin_unit(1 t: Bin) -> Unit {
+                match t { Bin::Leaf => (), Bin::Join(l, r, i) => () }
+            }
+            enum Stack { Empty, Push(ω head: Nat, ω rest: Stack) }
+            fn head_or_zero(1 s: Stack) -> Nat {
+                match s { Stack::Empty => zero, Stack::Push(head, rest) => head }
+            }
+        ";
+        let checked = check_source(short_binders);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+
+        let after_hit_match = r"
+            enum RecS1 { Base, Step(1 next: RecS1, <i>) = RecS1::Base .. RecS1::Base }
+            fn after_match(1 r: RecS1, 1 n: Nat) -> Sigma(1 _: Unit, Nat) {
+                (match r as |_| Unit { RecS1::Base => (), RecS1::Step(_next, _i) => () }, n)
+            }
+        ";
+        let checked = check_source(after_hit_match);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+
+        let field_capture = r"
+            enum Cyl(0 A: Type 0) { Pt(ω a: A), Seg(ω a: A, <i>) = Cyl::Pt(a) .. Cyl::Pt(a) }
+            fn bad(0 A: Type 0, 1 c: Cyl(A)) -> (ω _: A) -> A {
+                match c { Cyl::Pt(a) => |ω z| z, Cyl::Seg(a, i) => |ω z| a }
+            }
+        ";
+        assert!(matches!(
+            check_source(field_capture),
+            Err(ElabError::Type {
+                err: apollo_kernel::TypeError::HitBoundaryMismatch,
+                ..
+            })
+        ));
+    }
 }

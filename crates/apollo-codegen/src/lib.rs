@@ -429,14 +429,6 @@ impl<'a> DeclLowerer<'a> {
             | Term::PApp { .. }
             | Term::VIn { .. }
             | Term::VProj { .. } => self.lower_cubical(id, expected),
-            Term::PLam(_)
-            | Term::Path { .. }
-            | Term::VType { .. }
-            | Term::Interval
-            | Term::DimZero
-            | Term::DimOne => Err(CodegenError::UnreducibleCubical {
-                decl: self.decl_name.clone(),
-            }),
             Term::Ctor {
                 id,
                 ctor,

@@ -313,10 +313,29 @@ mod tests {
         let dep_type = arena.path(line_at_i, b_true, b_false);
         assert_eq!(check_closed(&arena, dep_term, dep_type), Ok(()));
 
-        // Direct vin introduction & vproj elimination at i, 0, and 1.
+        // Direct vin introduction & vproj elimination at i, 0, and 1, plus convertible with coe 0->i.
         let vin_tm = arena.v_in(v0, b_true, b_false);
         let vin_path = arena.plam(vin_tm);
         assert_eq!(check_closed(&arena, vin_path, dep_type), Ok(()));
+        let env_dim = vec![Value::dim_var(0)];
+        if let (Ok(v_coe), Ok(v_vin)) = (
+            eval(&arena, &env_dim, coe_dep),
+            eval(&arena, &env_dim, vin_tm),
+        ) {
+            assert_eq!(conv(&arena, 1, &v_coe, &v_vin), Ok(true));
+        }
+
+        // Check infer_v_type UsageVec length at ctx.len() == 2 inside a Pair (catches Ctx::len -> 0/1).
+        let nat = arena.nat();
+        let v1 = arena.var(Index(1));
+        let pair_v_ty = arena.sigma(Multiplicity::Zero, u0, nat);
+        let pair_end = arena.pair(bool_ty, v0);
+        let pair_v = arena.pair(v_line, v1);
+        let path_v_ty = arena.path(pair_v_ty, pair_end, pair_end);
+        let pi_v_outer = arena.pi(Multiplicity::Zero, nat, path_v_ty);
+        let plam_v = arena.plam(pair_v);
+        let lam_v_outer = arena.lam(Multiplicity::Zero, plam_v);
+        assert_eq!(check_closed(&arena, lam_v_outer, pi_v_outer), Ok(()));
 
         let vp_i = arena.v_proj(v0, bool_ty, bool_ty, not_equiv, vin_tm);
         let vp_path = arena.plam(vp_i);
@@ -462,9 +481,15 @@ mod tests {
             eval(&arena, &env2, open_vin),
             eval(&arena, &env2, vp_neu),
         ) {
-            assert!(quote(&mut arena, 2, &vv).is_ok());
-            assert!(quote(&mut arena, 2, &vi).is_ok());
-            assert!(quote(&mut arena, 2, &vp).is_ok());
+            assert!(
+                quote(&mut arena, 2, &vv).is_ok_and(|t| arena.format_term(t).starts_with("V("))
+            );
+            assert!(
+                quote(&mut arena, 2, &vi).is_ok_and(|t| arena.format_term(t).starts_with("vin("))
+            );
+            assert!(
+                quote(&mut arena, 2, &vp).is_ok_and(|t| arena.format_term(t).starts_with("vproj("))
+            );
             assert_eq!(conv(&arena, 2, &vv, &vv), Ok(true));
             assert_eq!(conv(&arena, 2, &vi, &vi), Ok(true));
             assert_eq!(conv(&arena, 2, &vp, &vp), Ok(true));
@@ -584,6 +609,179 @@ mod tests {
             assert_eq!(
                 infer_closed(&arena, vt).err(),
                 Some(TypeError::InvalidEquivalence)
+            );
+        }
+    }
+
+    #[test]
+    fn checks_dependent_coe_v_lines_and_nondep_pi() {
+        use super::check_nondep_pi;
+
+        let mut arena = TermArena::new();
+        let bool_ty = arena.bool_ty();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let (_, not_equiv) = build_not_equiv(&mut arena);
+
+        // Dependent V lines where ty0, ty1, or equiv varies with i must stay neutral in coe_line.
+        let env_fn = vec![Value::var(DeBruijnLevel(0))];
+        let app_fi = arena.app(v1, v0);
+        let dep_ty0 = arena.v_type(v0, app_fi, bool_ty, not_equiv);
+        let dep_ty1 = arena.v_type(v0, bool_ty, app_fi, not_equiv);
+        let dep_eq = arena.v_type(v0, bool_ty, bool_ty, app_fi);
+        for dep_line_tm in [dep_ty0, dep_ty1, dep_eq] {
+            let line = TypeLine::Closure(Closure::new(env_fn.clone(), dep_line_tm));
+            let res = coe_line(&arena, &line, Dim::Zero, Dim::One, Value::True);
+            assert!(matches!(res, Ok(Value::Neutral(_))));
+        }
+
+        // Direct check_nondep_pi tests: non-Pi and depth+1 vs depth*1 at depth=1.
+        let env1 = vec![Value::var(DeBruijnLevel(0))];
+        let pi_v0 = arena.pi(Multiplicity::One, bool_ty, v0);
+        let pi_v1 = arena.pi(Multiplicity::One, bool_ty, v1);
+        let outer_pi_v0 = arena.pi(Multiplicity::One, bool_ty, pi_v0);
+        if let (Ok(val_outer), Ok(val_exp)) =
+            (eval(&arena, &env1, outer_pi_v0), eval(&arena, &env1, pi_v1))
+        {
+            assert_eq!(
+                check_nondep_pi(&arena, 1, &Value::Bool, &Value::Bool, &Value::Bool),
+                Err(TypeError::InvalidEquivalence)
+            );
+            assert_eq!(
+                check_nondep_pi(&arena, 1, &val_outer, &Value::Bool, &val_exp),
+                Err(TypeError::InvalidEquivalence)
+            );
+        }
+    }
+
+    #[test]
+    fn checks_inv_path_family_and_endpoint_depths() {
+        use super::check_inv_path;
+
+        let mut arena = TermArena::new();
+        let bool_ty = arena.bool_ty();
+        let b_true = arena.bool_true();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v3 = arena.var(Index(3));
+
+        let id_val = Value::Lam {
+            mult: Multiplicity::One,
+            body: Closure::new(Vec::new(), v0),
+        };
+        let env1 = vec![Value::var(DeBruijnLevel(0))];
+
+        // 1. Bad left endpoint only (right == x) vs bad right endpoint only (left == f(g(x))).
+        let path_bad_l = arena.path(bool_ty, b_true, v0);
+        let path_bad_r = arena.path(bool_ty, v0, b_true);
+        let pi_bad_l = arena.pi(Multiplicity::Zero, bool_ty, path_bad_l);
+        let pi_bad_r = arena.pi(Multiplicity::Zero, bool_ty, path_bad_r);
+        if let (Ok(vl), Ok(vr)) = (eval(&arena, &env1, pi_bad_l), eval(&arena, &env1, pi_bad_r)) {
+            assert_eq!(
+                check_inv_path(&arena, 1, &vl, &Value::Bool, &id_val, &id_val),
+                Err(TypeError::InvalidEquivalence)
+            );
+            assert_eq!(
+                check_inv_path(&arena, 1, &vr, &Value::Bool, &id_val, &id_val),
+                Err(TypeError::InvalidEquivalence)
+            );
+        }
+
+        // 2. dim_var(depth + 1) vs depth - 1 (1) and depth * 1 (2) at depth = 2.
+        let app_f_dim = arena.app(v3, v0);
+        let app_f_slot1 = arena.app(v1, v0);
+        let env_dim1 = vec![Value::var(DeBruijnLevel(0)), Value::dim_var(1)];
+        let env_dim2 = vec![Value::var(DeBruijnLevel(0)), Value::dim_var(2)];
+        let path_dim_fam = arena.path(app_f_dim, v0, v0);
+        let pi_dim_fam = arena.pi(Multiplicity::Zero, app_f_slot1, path_dim_fam);
+        for env_d in [env_dim1, env_dim2] {
+            if let (Ok(v_pi), Ok(v_dom)) = (
+                eval(&arena, &env_d, pi_dim_fam),
+                eval(&arena, &env_d, app_f_slot1),
+            ) {
+                assert_eq!(
+                    check_inv_path(&arena, 2, &v_pi, &v_dom, &id_val, &id_val),
+                    Err(TypeError::InvalidEquivalence)
+                );
+            }
+        }
+
+        // 3. Family binder conv(depth + 2) vs depth * 2 (2) and depth - 2 at depth = 1.
+        let env_lvl2 = vec![Value::var(DeBruijnLevel(2))];
+        let dom_pi_v0 = arena.pi(Multiplicity::One, bool_ty, v0);
+        let fam_pi_env0 = arena.pi(Multiplicity::One, bool_ty, v3);
+        let path_fam_b = arena.path(fam_pi_env0, v0, v0);
+        let pi_fam_b = arena.pi(Multiplicity::Zero, dom_pi_v0, path_fam_b);
+        if let (Ok(v_dom), Ok(v_fb)) = (
+            eval(&arena, &env_lvl2, dom_pi_v0),
+            eval(&arena, &env_lvl2, pi_fam_b),
+        ) {
+            assert_eq!(
+                check_inv_path(&arena, 1, &v_fb, &v_dom, &id_val, &id_val),
+                Err(TypeError::InvalidEquivalence)
+            );
+        }
+    }
+
+    #[test]
+    fn checks_inv_path_endpoint_depths() {
+        use super::check_inv_path;
+
+        let mut arena = TermArena::new();
+        let bool_ty = arena.bool_ty();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let id_val = Value::Lam {
+            mult: Multiplicity::One,
+            body: Closure::new(Vec::new(), v0),
+        };
+        let env1 = vec![Value::var(DeBruijnLevel(0))];
+        let dom_pi_v0 = arena.pi(Multiplicity::One, bool_ty, v0);
+
+        // Left & right endpoint conv(depth + 1) vs depth * 1 (1) and depth - 1 (0) at depth = 1.
+        let lam_v0 = arena.lam(Multiplicity::One, v0);
+        let lam_v1 = arena.lam(Multiplicity::One, v1);
+        let lam_v2 = arena.lam(Multiplicity::One, v2);
+        let app_x_v1 = arena.app(v1, v1);
+        let app_x_v2 = arena.app(v1, v2);
+        let lam_app_x_v1 = arena.lam(Multiplicity::One, app_x_v1);
+        let lam_app_x_v2 = arena.lam(Multiplicity::One, app_x_v2);
+        let const_lam1 = Value::Lam {
+            mult: Multiplicity::One,
+            body: Closure::new(env1.clone(), lam_v1),
+        };
+        let const_lam2 = Value::Lam {
+            mult: Multiplicity::One,
+            body: Closure::new(env1.clone(), lam_v2),
+        };
+        let path_ll = arena.path(dom_pi_v0, lam_v0, v0);
+        let pi_ll = arena.pi(Multiplicity::Zero, dom_pi_v0, path_ll);
+        let path_lr1 = arena.path(dom_pi_v0, v0, lam_app_x_v1);
+        let pi_lr1 = arena.pi(Multiplicity::Zero, dom_pi_v0, path_lr1);
+        let path_lr2 = arena.path(dom_pi_v0, v0, lam_app_x_v2);
+        let pi_lr2 = arena.pi(Multiplicity::Zero, dom_pi_v0, path_lr2);
+        if let (Ok(v_dom), Ok(v_ll), Ok(v_lr1), Ok(v_lr2)) = (
+            eval(&arena, &env1, dom_pi_v0),
+            eval(&arena, &env1, pi_ll),
+            eval(&arena, &env1, pi_lr1),
+            eval(&arena, &env1, pi_lr2),
+        ) {
+            assert_eq!(
+                check_inv_path(&arena, 1, &v_ll, &v_dom, &const_lam1, &id_val),
+                Err(TypeError::InvalidEquivalence)
+            );
+            assert_eq!(
+                check_inv_path(&arena, 1, &v_ll, &v_dom, &const_lam2, &id_val),
+                Err(TypeError::InvalidEquivalence)
+            );
+            assert_eq!(
+                check_inv_path(&arena, 1, &v_lr1, &v_dom, &id_val, &id_val),
+                Err(TypeError::InvalidEquivalence)
+            );
+            assert_eq!(
+                check_inv_path(&arena, 1, &v_lr2, &v_dom, &id_val, &id_val),
+                Err(TypeError::InvalidEquivalence)
             );
         }
     }

@@ -1434,6 +1434,17 @@ mod tests {
             theorem vp_zero() -> Path(_ => Bool, vproj(0, Bool, Bool, not_equiv, true), false) {
                 <i> false
             }
+            enum Opt(0 A: Type 0) { None, Some(1 v: A) }
+            fn id_opt(1 o: Opt(Bool)) -> Opt(Bool) { o }
+            theorem id_opt_eq(0 o: Opt(Bool)) -> Path(_ => Opt(Bool), id_opt(id_opt(o)), o) {
+                <i> o
+            }
+            theorem id_opt_equiv() -> Equiv(Opt(Bool), Opt(Bool)) {
+                (id_opt, (id_opt, (id_opt_eq, id_opt_eq)))
+            }
+            theorem vin_inferred_ctor() -> Path(i => V(i, Opt(Bool), Opt(Bool), id_opt_equiv), (Opt::None : Opt(Bool)), (Opt::None : Opt(Bool))) {
+                <i> vin(i, Opt::None, Opt::None)
+            }
             fn flip_ua(1 b: Bool) -> Bool {
                 coe(i => bool_flip @ i, 0, 1, b)
             }
@@ -1441,7 +1452,14 @@ mod tests {
         let checked = check_source(src);
         assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
         if let Ok(module) = checked {
-            assert_eq!(module.decls.len(), 9);
+            assert_eq!(module.decls.len(), 13);
         }
+        assert!(matches!(
+            check_source("theorem bad() -> Unit { I }"),
+            Err(ElabError::Type {
+                err: apollo_kernel::TypeError::ExpectedUniverse,
+                ..
+            })
+        ));
     }
 }

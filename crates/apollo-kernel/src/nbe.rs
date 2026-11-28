@@ -597,8 +597,7 @@ fn eval_v_term(
                     let fwd = proj_fst(&equiv_val);
                     apply(arena, &fwd, val)
                 }
-                Value::Dim(Dim::One) => Ok(val),
-                Value::Dim(d) => match val {
+                Value::Dim(d @ Dim::Var(_)) => match val {
                     Value::VIn { right, .. } => Ok((*right).clone()),
                     Value::Neutral(neutral) => Ok(Value::Neutral(Arc::new(Neutral::VProj {
                         dim: d,

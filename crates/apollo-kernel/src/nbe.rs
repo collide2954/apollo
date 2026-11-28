@@ -646,6 +646,20 @@ fn eval_data_term(
             for &a in args {
                 arg_vals.push(eval(arena, env, a)?);
             }
+            if let Some(boundary) = arena
+                .get_inductive(*did)
+                .and_then(|d| d.ctors.get(*ctor as usize))
+                .and_then(|c| c.boundary)
+                && let Some((last, fields)) = arg_vals.split_last()
+            {
+                let mut b_env = param_vals.clone();
+                b_env.extend_from_slice(fields);
+                match last {
+                    Value::Dim(Dim::Zero) => return eval(arena, &b_env, boundary.left),
+                    Value::Dim(Dim::One) => return eval(arena, &b_env, boundary.right),
+                    _ => {}
+                }
+            }
             Ok(Value::Ctor {
                 id: *did,
                 ctor: *ctor,
@@ -676,7 +690,7 @@ fn eval_data_term(
     }
 }
 
-fn eval_data_elim(
+pub(crate) fn eval_data_elim(
     arena: &TermArena,
     id: InductiveId,
     params: &[Value],
@@ -715,13 +729,18 @@ fn eval_data_elim(
                     args,
                 });
             };
+            let field_count = ctor_decl.fields.len();
+            let field_args = args.get(..field_count).unwrap_or(&args);
             let mut full_args = Vec::with_capacity(ctor_decl.branch_arity());
-            full_args.extend(args.iter().cloned());
-            for (arg, field) in args.iter().zip(&ctor_decl.fields) {
+            full_args.extend(field_args.iter().cloned());
+            for (arg, field) in field_args.iter().zip(&ctor_decl.fields) {
                 if field.is_recursive {
                     let ih = eval_data_elim(arena, id, params, motive, branches, arg.clone())?;
                     full_args.push(ih);
                 }
+            }
+            if let Some(dim_arg) = args.get(field_count) {
+                full_args.push(dim_arg.clone());
             }
             branch.apply_many(arena, &full_args)
         }
@@ -1327,6 +1346,18 @@ fn quote_neutral_inductive(
     }
 }
 
+fn branch_vars(depth: u32, arity: u32, is_path: bool) -> Vec<Value> {
+    let mut vars = Vec::with_capacity(arity as usize);
+    for offset in 0..arity {
+        if is_path && offset + 1 == arity {
+            vars.push(Value::dim_var(depth + offset));
+        } else {
+            vars.push(Value::var(DeBruijnLevel(depth + offset)));
+        }
+    }
+    vars
+}
+
 fn quote_data_elim(
     arena: &mut TermArena,
     depth: u32,
@@ -1342,18 +1373,15 @@ fn quote_data_elim(
     }
     let m_val = motive.apply(arena, Value::var(DeBruijnLevel(depth)))?;
     let m_id = quote(arena, depth + 1, &m_val)?;
-    let arities: Vec<u32> = arena.get_inductive(id).map_or_else(Vec::new, |decl| {
+    let specs: Vec<(u32, bool)> = arena.get_inductive(id).map_or_else(Vec::new, |decl| {
         decl.ctors
             .iter()
-            .map(|c| u32::try_from(c.branch_arity()).unwrap_or(0))
+            .map(|c| (u32::try_from(c.branch_arity()).unwrap_or(0), c.is_path()))
             .collect()
     });
     let mut branch_ids = Vec::with_capacity(branches.len());
-    for (branch, arity) in branches.iter().zip(arities) {
-        let mut vars = Vec::with_capacity(arity as usize);
-        for offset in 0..arity {
-            vars.push(Value::var(DeBruijnLevel(depth + offset)));
-        }
+    for (branch, (arity, is_path)) in branches.iter().zip(specs) {
+        let vars = branch_vars(depth, arity, is_path);
         let b_val = branch.apply_many(arena, &vars)?;
         branch_ids.push(quote(arena, depth + arity, &b_val)?);
     }
@@ -1804,17 +1832,14 @@ fn conv_data_elim(
     {
         return Ok(false);
     }
-    let arities: Vec<u32> = arena.get_inductive(i1).map_or_else(Vec::new, |decl| {
+    let specs: Vec<(u32, bool)> = arena.get_inductive(i1).map_or_else(Vec::new, |decl| {
         decl.ctors
             .iter()
-            .map(|c| u32::try_from(c.branch_arity()).unwrap_or(0))
+            .map(|c| (u32::try_from(c.branch_arity()).unwrap_or(0), c.is_path()))
             .collect()
     });
-    for ((br1, br2), arity) in b1.iter().zip(b2).zip(arities) {
-        let mut vars = Vec::with_capacity(arity as usize);
-        for offset in 0..arity {
-            vars.push(Value::var(DeBruijnLevel(depth + offset)));
-        }
+    for ((br1, br2), (arity, is_path)) in b1.iter().zip(b2).zip(specs) {
+        let vars = branch_vars(depth, arity, is_path);
         let v1 = br1.apply_many(arena, &vars)?;
         let v2 = br2.apply_many(arena, &vars)?;
         if !conv(arena, depth + arity, &v1, &v2)? {
@@ -2683,13 +2708,17 @@ mod tests {
                 }],
                 level: Level::constant(0),
                 ctors: vec![
-                    CtorDecl { fields: Vec::new() },
+                    CtorDecl {
+                        fields: Vec::new(),
+                        boundary: None,
+                    },
                     CtorDecl {
                         fields: vec![FieldDecl {
                             mult: Multiplicity::One,
                             ty: v0,
                             is_recursive: false,
                         }],
+                        boundary: None,
                     },
                 ],
             },
@@ -2704,7 +2733,10 @@ mod tests {
                 }],
                 level: Level::constant(0),
                 ctors: vec![
-                    CtorDecl { fields: Vec::new() },
+                    CtorDecl {
+                        fields: Vec::new(),
+                        boundary: None,
+                    },
                     CtorDecl {
                         fields: vec![
                             FieldDecl {
@@ -2718,6 +2750,7 @@ mod tests {
                                 is_recursive: false,
                             },
                         ],
+                        boundary: None,
                     },
                 ],
             },
@@ -2787,7 +2820,10 @@ mod tests {
                 }],
                 level: Level::constant(0),
                 ctors: vec![
-                    CtorDecl { fields: Vec::new() },
+                    CtorDecl {
+                        fields: Vec::new(),
+                        boundary: None,
+                    },
                     CtorDecl {
                         fields: vec![
                             FieldDecl {
@@ -2801,6 +2837,7 @@ mod tests {
                                 is_recursive: false,
                             },
                         ],
+                        boundary: None,
                     },
                 ],
             },

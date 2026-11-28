@@ -25,9 +25,17 @@ pub enum DataKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathBoundaryAst {
+    pub dim_name: String,
+    pub left: Expr,
+    pub right: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VariantDecl {
     pub name: String,
     pub fields: Vec<Param>,
+    pub path: Option<PathBoundaryAst>,
     pub span: Span,
 }
 

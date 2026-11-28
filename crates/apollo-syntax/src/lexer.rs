@@ -46,6 +46,7 @@ pub enum TokenKind {
     ColonColon,
     Semicolon,
     Dot,
+    DotDot,
     At,
     Pipe,
     Eq,
@@ -172,6 +173,10 @@ impl<'a> Lexer<'a> {
             }
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,
+            '.' if self.peek() == Some('.') => {
+                let _ = self.advance();
+                TokenKind::DotDot
+            }
             '.' => TokenKind::Dot,
             '@' => TokenKind::At,
             '→' => TokenKind::Arrow,
@@ -329,6 +334,22 @@ mod tests {
                     TokenKind::Succ,
                     TokenKind::Match,
                     TokenKind::As,
+                    TokenKind::Eof,
+                ]
+            );
+        }
+        let dots = lex("a.b .. c");
+        assert!(dots.is_ok());
+        if let Ok(list) = dots {
+            let kinds: Vec<TokenKind> = list.into_iter().map(|t| t.kind).collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    TokenKind::Ident("a".to_owned()),
+                    TokenKind::Dot,
+                    TokenKind::Ident("b".to_owned()),
+                    TokenKind::DotDot,
+                    TokenKind::Ident("c".to_owned()),
                     TokenKind::Eof,
                 ]
             );

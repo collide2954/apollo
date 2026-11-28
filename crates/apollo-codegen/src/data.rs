@@ -99,7 +99,7 @@ fn collect_initial_metas(
             let field_names: Vec<String> =
                 ctor.fields.iter().map(|f| escape_ident(&f.name)).collect();
             let field_rec: Vec<bool> = ctor.fields.iter().map(|f| f.is_recursive).collect();
-            if field_rec.iter().any(|&r| r) {
+            if !ctor.is_path && field_rec.iter().any(|&r| r) {
                 uses_alloc = true;
             }
             ctor_metas.push(LoweredCtorMeta {
@@ -129,6 +129,9 @@ fn lower_data_kind(
         DataKind::Enum => {
             let mut variants = Vec::with_capacity(data.ctors.len());
             for (c_idx, (ctor_info, k_ctor)) in data.ctors.iter().zip(&k_decl.ctors).enumerate() {
+                if ctor_info.is_path {
+                    continue;
+                }
                 let mut fields = Vec::new();
                 for (f_idx, (f_info, k_field)) in
                     ctor_info.fields.iter().zip(&k_ctor.fields).enumerate()
@@ -334,6 +337,9 @@ impl DeclLowerer<'_> {
         let mut uses_recursion = false;
         let mut max_rec_in_arm = 0_usize;
         for (c_idx, (k_ctor, &branch_id)) in k_decl.ctors.iter().zip(branches).enumerate() {
+            if k_ctor.is_path() {
+                continue;
+            }
             let arm = self.lower_data_arm(&ArmSpec {
                 id,
                 c_idx,

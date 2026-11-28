@@ -30,6 +30,7 @@ pub struct CheckedField {
 pub struct CheckedCtor {
     pub name: String,
     pub fields: Vec<CheckedField>,
+    pub is_path: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +196,7 @@ pub(crate) struct Elaborator {
     pub(crate) globals: HashMap<String, (TermId, TermId)>,
     pub(crate) data_map: HashMap<String, CheckedData>,
     pub(crate) data_decls: Vec<CheckedData>,
+    pub(crate) pending_inductive: Option<(InductiveId, Vec<apollo_kernel::CtorDecl>)>,
     pub(crate) decl_name: String,
 }
 
@@ -208,6 +210,7 @@ impl Elaborator {
             globals: HashMap::new(),
             data_map: HashMap::new(),
             data_decls: Vec::new(),
+            pending_inductive: None,
             decl_name: String::new(),
         }
     }
@@ -219,7 +222,7 @@ impl Elaborator {
         var
     }
 
-    fn push_dim(&mut self, name: String) -> Value {
+    pub(crate) fn push_dim(&mut self, name: String) -> Value {
         let dim = self.ctx.push_dim();
         self.env.push(dim.clone());
         self.locals.push(name);
@@ -1460,6 +1463,111 @@ mod tests {
                 err: apollo_kernel::TypeError::ExpectedUniverse,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn elaborates_hits_s1_upair_trunc_and_rejects_incoherent_branches() {
+        let src = r"
+            enum S1 {
+                Base,
+                Loop(<i>) = S1::Base .. S1::Base,
+            }
+            fn not(1 b: Bool) -> Bool {
+                match b { true => false, false => true }
+            }
+            theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+                match b as |x| Path(_ => Bool, not(not(x)), x) {
+                    true => <i> true,
+                    false => <i> false,
+                }
+            }
+            theorem Equiv(0 A: Type 0, 0 B: Type 0) -> Type 0 {
+                Sigma(0 f: (1 _: A) -> B, Sigma(0 g: (1 _: B) -> A, Sigma(0 sec: (0 b: B) -> Path(_ => B, f(g(b)), b), (0 a: A) -> Path(_ => A, g(f(a)), a))))
+            }
+            theorem not_equiv() -> Equiv(Bool, Bool) {
+                (not, (not, (not_not, not_not)))
+            }
+            theorem double_cover(1 x: S1) -> Type 0 {
+                match x as |_| Type 0 {
+                    S1::Base => Bool,
+                    S1::Loop(i) => V(i, Bool, Bool, not_equiv),
+                }
+            }
+            theorem loop_flips() -> Path(_ => Bool, coe(i => double_cover(S1::Loop(i)), 0, 1, true), false) {
+                <i> false
+            }
+            enum UPair(0 A: Type 0) {
+                Pair(1 a: A, 1 b: A),
+                Swap(1 a: A, 1 b: A, <i>) = UPair::Pair(a, b) .. UPair::Pair(b, a),
+            }
+            fn swapped_explicit(1 a: Bool, 1 b: Bool) -> UPair(Bool) {
+                UPair::Swap(Bool, a, b, 1)
+            }
+            enum RecS1 {
+                Base,
+                Step(1 next: RecS1, <i>) = RecS1::Base .. RecS1::Base,
+            }
+            fn rec_s1_const(1 r: RecS1) -> Unit {
+                match r {
+                    RecS1::Base => (),
+                    RecS1::Step(_next, _i) => (),
+                }
+            }
+            enum Trunc(0 A: Type 0) {
+                In(1 x: A),
+                Squash(1 x: Trunc(A), 1 y: Trunc(A), <i>) = x .. y,
+            }
+            fn trunc_rec(
+                0 A: Type 0,
+                0 B: Type 0,
+                1 f: (1 _: A) -> B,
+                0 prop: (0 x: B, 0 y: B) -> Path(_ => B, x, y),
+                1 t: Trunc(A),
+            ) -> B {
+                match t {
+                    Trunc::In(x) => f(x),
+                    Trunc::Squash(x, y, ih_x, ih_y, i) => (prop(ih_x, ih_y)) @ i,
+                }
+            }
+        ";
+        let checked = check_source(src);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+        if let Ok(m) = checked {
+            assert_eq!(m.data_decls.len(), 4);
+            assert!(m.data_decls[0].ctors[1].is_path);
+        }
+
+        let bad_hit = r"
+            enum S1 { Base, Loop(<i>) = S1::Base .. S1::Base }
+            fn bad(1 x: S1) -> Bool {
+                match x { S1::Base => true, S1::Loop(i) => false }
+            }
+        ";
+        assert!(matches!(
+            check_source(bad_hit),
+            Err(ElabError::Type {
+                err: apollo_kernel::TypeError::HitBoundaryMismatch,
+                ..
+            })
+        ));
+        let bad_binders = r"
+            enum S1 { Base, Loop(<i>) = S1::Base .. S1::Base }
+            fn bad(1 x: S1) -> Bool {
+                match x { S1::Base => true, S1::Loop => true }
+            }
+        ";
+        assert!(matches!(
+            check_source(bad_binders),
+            Err(ElabError::InvalidMatch { .. })
+        ));
+        let bad_args = r"
+            enum S1 { Base, Loop(<i>) = S1::Base .. S1::Base }
+            theorem bad() -> S1 { S1::Loop }
+        ";
+        assert!(matches!(
+            check_source(bad_args),
+            Err(ElabError::InvalidData { .. })
         ));
     }
 }

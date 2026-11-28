@@ -5,6 +5,14 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-27
+
+### Added
+
+- Add higher inductive path constructors, endpoint reduction, and coherence boundary checks in `apollo-kernel`.
+- Add path constructor syntax and elaboration in `apollo-syntax` and `apollo-elab`.
+- Add zero-overhead quotient extraction in `apollo-codegen`, `examples/hits.ap`, and the browser playground.
+
 ## [0.10.0] - 2026-11-27
 
 ### Added

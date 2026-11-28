@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::ast::{
     CofExpr, DataDecl, DataKind, Decl, DeclKind, Expr, ExprKind, HComBranch, MatchArm, Module,
-    ModuleItem, MultAst, Param, Pattern, VariantDecl,
+    ModuleItem, MultAst, Param, PathBoundaryAst, Pattern, VariantDecl,
 };
 use crate::lexer::{LexError, Token, TokenKind, lex};
 use crate::span::Span;
@@ -199,20 +199,7 @@ impl<'a> Parser<'a> {
         let _ = self.expect(&TokenKind::LBrace, "'{'")?;
         let mut variants = Vec::new();
         while !self.check(&TokenKind::RBrace) {
-            let (vname, vstart) = self.expect_ident("variant name")?;
-            let (fields, vend) = if self.check(&TokenKind::LParen) {
-                let _ = self.advance();
-                let fs = self.parse_param_list()?;
-                let end = self.expect(&TokenKind::RParen, "')'")?;
-                (fs, end)
-            } else {
-                (Vec::new(), vstart)
-            };
-            variants.push(VariantDecl {
-                name: vname,
-                fields,
-                span: vstart.merge(vend),
-            });
+            variants.push(self.parse_variant()?);
             if self.check(&TokenKind::Comma) {
                 let _ = self.advance();
             } else {
@@ -227,6 +214,56 @@ impl<'a> Parser<'a> {
             level,
             variants,
             span: start.merge(end),
+        })
+    }
+
+    fn parse_variant(&mut self) -> Result<VariantDecl, ParseError> {
+        let (vname, vstart) = self.expect_ident("variant name")?;
+        let mut fields = Vec::new();
+        let mut dim_name = None;
+        let mut vend = if self.check(&TokenKind::LParen) {
+            let _ = self.advance();
+            while !self.check(&TokenKind::RParen) {
+                if self.check(&TokenKind::LAngle) {
+                    let _ = self.advance();
+                    let (dname, _) = self.expect_ident("dimension name")?;
+                    let _ = self.expect(&TokenKind::RAngle, "'>'")?;
+                    dim_name = Some(dname);
+                    if self.check(&TokenKind::Comma) {
+                        let _ = self.advance();
+                    }
+                    break;
+                }
+                fields.push(self.parse_param()?);
+                if self.check(&TokenKind::Comma) {
+                    let _ = self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RParen, "')'")?
+        } else {
+            vstart
+        };
+        let path = if let Some(dname) = dim_name {
+            let _ = self.expect(&TokenKind::Eq, "'='")?;
+            let left = self.parse_expr()?;
+            let _ = self.expect(&TokenKind::DotDot, "'..'")?;
+            let right = self.parse_expr()?;
+            vend = right.span;
+            Some(PathBoundaryAst {
+                dim_name: dname,
+                left,
+                right,
+            })
+        } else {
+            None
+        };
+        Ok(VariantDecl {
+            name: vname,
+            fields,
+            path,
+            span: vstart.merge(vend),
         })
     }
 
@@ -252,7 +289,12 @@ impl<'a> Parser<'a> {
             name: name.clone(),
             params,
             level,
-            variants: vec![VariantDecl { name, fields, span }],
+            variants: vec![VariantDecl {
+                name,
+                fields,
+                path: None,
+                span,
+            }],
             span,
         })
     }
@@ -1408,6 +1450,45 @@ mod tests {
                 ..
             }) if type_name == "Point" && type_args.len() == 1 && fields.len() == 2
         ));
+    }
+
+    #[test]
+    fn parses_higher_inductive_variants_and_boundaries() {
+        let hit_src = r"
+            enum S1 {
+                Base,
+                Loop(<i>) = S1::Base .. S1::Base,
+            }
+            enum UPair(0 A: Type 0) {
+                Pair(1 a: A, 1 b: A),
+                Swap(1 a: A, 1 b: A, <i>,) = UPair::Pair(a, b) .. UPair::Pair(b, a),
+            }
+        ";
+        let hit_parsed = parse_module(hit_src);
+        assert!(
+            hit_parsed.is_ok(),
+            "unexpected error: {:?}",
+            hit_parsed.err()
+        );
+        if let Ok(m) = hit_parsed {
+            assert_eq!(m.items.len(), 2);
+            assert!(matches!(
+                &m.items[0],
+                ModuleItem::Data(d)
+                    if d.variants.len() == 2
+                        && d.variants[0].path.is_none()
+                        && d.variants[1].path.as_ref().is_some_and(|p| p.dim_name == "i")
+            ));
+            assert!(matches!(
+                &m.items[1],
+                ModuleItem::Data(d)
+                    if d.variants.len() == 2
+                        && d.variants[1].fields.len() == 2
+                        && d.variants[1].path.is_some()
+            ));
+        }
+        assert!(parse_module("enum Bad { Loop(<i>) S1::Base .. S1::Base }").is_err());
+        assert!(parse_module("enum Bad { Loop(<i>) = S1::Base }").is_err());
     }
 
     #[test]

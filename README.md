@@ -42,7 +42,7 @@ Extract verified `#![no_std]` Rust code from the data type example:
 cargo run -p apollo-cli -- build examples/data.ap
 ```
 
-You can also build `examples/univalence.ap`, `examples/arithmetic.ap`, and `examples/extractable.ap`.
+You can also build `examples/hits.ap`, `examples/univalence.ap`, `examples/arithmetic.ap`, and `examples/extractable.ap`.
 
 ## Documentation
 

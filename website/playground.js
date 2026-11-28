@@ -134,6 +134,92 @@ fn flip_via_univalence(1 b: Bool) -> Bool {
 }
 `,
   },
+  hits: {
+    label: "Higher Inductive Types (S1 and UPair)",
+    code: `// The Circle S1 as a Higher Inductive Type
+enum S1 {
+    Base,
+    Loop(<i>) = S1::Base .. S1::Base,
+}
+
+fn not(1 b: Bool) -> Bool {
+    match b { true => false, false => true }
+}
+
+theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+    match b as |x| Path(_ => Bool, not(not(x)), x) {
+        true => <i> true,
+        false => <i> false,
+    }
+}
+
+theorem Equiv(0 A: Type 0, 0 B: Type 0) -> Type 0 {
+    Sigma(0 f: (1 _: A) -> B, Sigma(0 g: (1 _: B) -> A, Sigma(0 sec: (0 b: B) -> Path(_ => B, f(g(b)), b), (0 a: A) -> Path(_ => A, g(f(a)), a))))
+}
+
+theorem not_equiv() -> Equiv(Bool, Bool) {
+    (not, (not, (not_not, not_not)))
+}
+
+// Double cover of S1 via Univalence: transporting true around Loop yields false!
+theorem double_cover(1 x: S1) -> Type 0 {
+    match x as |_| Type 0 {
+        S1::Base => Bool,
+        S1::Loop(i) => V(i, Bool, Bool, not_equiv),
+    }
+}
+
+theorem loop_flips_true() -> Path(_ => Bool, coe(i => double_cover(S1::Loop(i)), 0, 1, true), false) {
+    <i> false
+}
+
+// Unordered pair quotient: every match must prove symmetry!
+enum UPair(0 A: Type 0) {
+    Pair(1 a: A, 1 b: A),
+    Swap(1 a: A, 1 b: A, <i>) = UPair::Pair(a, b) .. UPair::Pair(b, a),
+}
+
+fn add(1 a: Nat, 1 b: Nat) -> Nat {
+    match a { zero => b, succ(_, ih) => succ(ih) }
+}
+
+theorem add_zero_right(0 n: Nat) -> Path(_ => Nat, add(n, zero), n) {
+    match n as |k| Path(_ => Nat, add(k, zero), k) {
+        zero => <i> zero,
+        succ(_, ih) => <i> succ(ih @ i),
+    }
+}
+
+theorem add_succ_right(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, add(a, succ(b)), succ(add(a, b))) {
+    match a as |k| Path(_ => Nat, add(k, succ(b)), succ(add(k, b))) {
+        zero => <i> succ(b),
+        succ(_, ih) => <i> succ(ih @ i),
+    }
+}
+
+theorem sym(0 A: Type 0, 0 x: A, 0 y: A, 0 p: Path(_ => A, x, y)) -> Path(_ => A, y, x) {
+    <i> hcom(A, 0, 1, [i = 0 => <j> p @ j, i = 1 => <j> x], x)
+}
+
+theorem trans(0 A: Type 0, 0 x: A, 0 y: A, 0 z: A, 0 p: Path(_ => A, x, y), 0 q: Path(_ => A, y, z)) -> Path(_ => A, x, z) {
+    <i> hcom(A, 0, 1, [i = 0 => <j> x, i = 1 => <j> q @ j], p @ i)
+}
+
+theorem add_comm(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, add(a, b), add(b, a)) {
+    match a as |k| Path(_ => Nat, add(k, b), add(b, k)) {
+        zero => sym(Nat, add(b, zero), b, add_zero_right(b)),
+        succ(k, ih) => trans(Nat, succ(add(k, b)), succ(add(b, k)), add(b, succ(k)), <i> succ(ih @ i), sym(Nat, add(b, succ(k)), succ(add(b, k)), add_succ_right(b, k))),
+    }
+}
+
+fn sum_upair(1 p: UPair(Nat)) -> Nat {
+    match p {
+        UPair::Pair(a, b) => add(a, b),
+        UPair::Swap(a, b, i) => add_comm(a, b) @ i,
+    }
+}
+`,
+  },
 };
 
 function encodeBase64Url(text) {

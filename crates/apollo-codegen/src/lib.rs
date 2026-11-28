@@ -430,11 +430,21 @@ impl<'a> DeclLowerer<'a> {
             | Term::VIn { .. }
             | Term::VProj { .. } => self.lower_cubical(id, expected),
             Term::Ctor {
-                id,
+                id: did,
                 ctor,
                 params,
                 args,
-            } => self.lower_ctor(id, ctor, &params, &args),
+            } => {
+                if self
+                    .arena
+                    .get_inductive(did)
+                    .and_then(|d| d.ctors.get(ctor as usize))
+                    .is_some_and(apollo_kernel::CtorDecl::is_path)
+                {
+                    return self.lower_cubical(id, expected);
+                }
+                self.lower_ctor(did, ctor, &params, &args)
+            }
             Term::DataElim {
                 id,
                 params,
@@ -633,6 +643,17 @@ impl<'a> DeclLowerer<'a> {
             ) => Err(CodegenError::UnreducibleCubical {
                 decl: self.decl_name.clone(),
             }),
+            Some(Term::Ctor { id: did, ctor, .. })
+                if self
+                    .arena
+                    .get_inductive(*did)
+                    .and_then(|d| d.ctors.get(*ctor as usize))
+                    .is_some_and(apollo_kernel::CtorDecl::is_path) =>
+            {
+                Err(CodegenError::UnreducibleCubical {
+                    decl: self.decl_name.clone(),
+                })
+            }
             _ => self.lower_expr(quoted, expected),
         }
     }
@@ -1818,6 +1839,87 @@ pub fn r#impl<A>(r#type: A) -> A {
                 "pub fn flip_via_vproj(b: bool) -> bool {\n    if b { false } else { true }\n}"
             ));
             assert!(code.contains("pub fn keep_via_vin(b: bool) -> bool {\n    b\n}"));
+        }
+    }
+
+    #[test]
+    fn extracts_hit_quotients_without_alloc_and_rejects_open_path_ctor() {
+        let src = r"
+            enum S1 {
+                Base,
+                Loop(<i>) = S1::Base .. S1::Base,
+            }
+            enum Trunc(0 A: Type 0) {
+                In(1 x: A),
+                Squash(1 x: Trunc(A), 1 y: Trunc(A), <i>) = x .. y,
+            }
+            fn add(1 a: Nat, 1 b: Nat) -> Nat {
+                match a { zero => b, succ(k, ih) => succ(ih) }
+            }
+            theorem add_zr(0 n: Nat) -> Path(_ => Nat, add(n, zero), n) {
+                match n as |k| Path(_ => Nat, add(k, zero), k) {
+                    zero => <i> zero,
+                    succ(k, ih) => <i> succ(ih @ i),
+                }
+            }
+            theorem add_sr(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, add(a, succ(b)), succ(add(a, b))) {
+                match a as |k| Path(_ => Nat, add(k, succ(b)), succ(add(k, b))) {
+                    zero => <i> succ(b),
+                    succ(k, ih) => <i> succ(ih @ i),
+                }
+            }
+            theorem sym(0 A: Type 0, 0 x: A, 0 y: A, 0 p: Path(_ => A, x, y)) -> Path(_ => A, y, x) {
+                <i> hcom(A, 0, 1, [i = 0 => <j> p @ j, i = 1 => <j> x], x)
+            }
+            theorem trans(0 A: Type 0, 0 x: A, 0 y: A, 0 z: A, 0 p: Path(_ => A, x, y), 0 q: Path(_ => A, y, z)) -> Path(_ => A, x, z) {
+                <i> hcom(A, 0, 1, [i = 0 => <j> x, i = 1 => <j> q @ j], p @ i)
+            }
+            theorem add_comm(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, add(a, b), add(b, a)) {
+                match a as |k| Path(_ => Nat, add(k, b), add(b, k)) {
+                    zero => sym(Nat, add(b, zero), b, add_zr(b)),
+                    succ(k, ih) => trans(Nat, succ(add(k, b)), succ(add(b, k)), add(b, succ(k)), <i> succ(ih @ i), sym(Nat, add(b, succ(k)), succ(add(b, k)), add_sr(b, k))),
+                }
+            }
+            enum UPair(0 A: Type 0) {
+                Pair(1 a: A, 1 b: A),
+                Swap(1 a: A, 1 b: A, <i>) = UPair::Pair(a, b) .. UPair::Pair(b, a),
+            }
+            fn sum_upair(1 p: UPair(Nat)) -> Nat {
+                match p {
+                    UPair::Pair(a, b) => add(a, b),
+                    UPair::Swap(a, b, i) => add_comm(a, b) @ i,
+                }
+            }
+            fn swapped_pair(1 a: Nat, 1 b: Nat) -> UPair(Nat) {
+                UPair::Swap(a, b, 1)
+            }
+        ";
+        let emitted = compile_source(src);
+        assert!(emitted.is_ok(), "unexpected error: {:?}", emitted.err());
+        if let Ok(code) = emitted {
+            assert!(!code.contains("extern crate alloc"));
+            assert!(!code.contains("Loop"));
+            assert!(!code.contains("Squash"));
+            assert!(!code.contains("Swap"));
+            assert!(code.contains("pub enum S1 {\n    Base,\n}"));
+            assert!(code.contains("pub enum Trunc<A> {\n    In(A),\n}"));
+            assert!(code.contains("pub enum UPair<A> {\n    Pair(A, A),\n}"));
+            assert!(code.contains("UPair::Pair(b, a)"));
+        }
+
+        // Open-dim path constructor in a runtime body must fail with UnreducibleCubical.
+        let mut checked = apollo_elab::check_source(
+            "enum S1 { Base, Loop(<i>) = S1::Base .. S1::Base }\nfn ok(0 _x: Bool) -> S1 { S1::Base }",
+        );
+        if let Ok(ref mut module) = checked {
+            let s1_id = module.data_decls[0].id;
+            let open_dim = module.arena.var(apollo_kernel::Index(0));
+            let open_loop = module.arena.ctor(s1_id, 1, Vec::new(), vec![open_dim]);
+            module.decls[0].body = module
+                .arena
+                .lam(apollo_kernel::Multiplicity::Zero, open_loop);
+            let res = super::emit_module(module);
+            assert!(matches!(res, Err(CodegenError::UnreducibleCubical { .. })));
         }
     }
 }

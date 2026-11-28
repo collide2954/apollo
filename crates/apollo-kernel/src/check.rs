@@ -2,10 +2,13 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::cubical::{Cof, Dim, Face};
-use crate::inductive::{CtorDecl, InductiveId};
+use crate::inductive::{CtorDecl, InductiveId, PathBoundary};
 use crate::level::Level;
 use crate::multiplicity::{Multiplicity, UsageError, UsageVec};
-use crate::nbe::{Closure, Env, EvalError, Value, conv, eval, eval_cof, proj_fst, subtype};
+use crate::nbe::{
+    Closure, Env, EvalError, MultiClosure, Value, conv, eval, eval_cof, eval_data_elim, proj_fst,
+    subtype,
+};
 use crate::term::{CofTerm, DeBruijnLevel, Index, Term, TermArena, TermId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +53,7 @@ pub enum TypeError {
     InvalidEquivalence,
     VBoundaryMismatch,
     CannotInferVIn,
+    HitBoundaryMismatch,
 }
 
 impl From<EvalError> for TypeError {
@@ -120,6 +124,9 @@ impl fmt::Display for TypeError {
                 f.write_str("V-type introduction boundary mismatch at dim 0")
             }
             Self::CannotInferVIn => f.write_str("cannot infer type of unannotated vin term"),
+            Self::HitBoundaryMismatch => {
+                f.write_str("higher inductive path branch does not match endpoint")
+            }
         }
     }
 }
@@ -755,9 +762,10 @@ fn infer_ctor(
             ctor: spec.ctor,
         })?;
     let param_vals = check_data_params(arena, ctx, spec.id, spec.params)?;
-    if spec.args.len() != ctor_decl.fields.len() {
+    let expected_arity = ctor_decl.arg_arity();
+    if spec.args.len() != expected_arity {
         return Err(TypeError::ArityMismatch {
-            expected: ctor_decl.fields.len(),
+            expected: expected_arity,
             actual: spec.args.len(),
         });
     }
@@ -768,6 +776,11 @@ fn infer_ctor(
         let u_arg = check(arena, ctx, mode.mul(field.mult), arg, &field_ty)?;
         total = total.add(&u_arg)?;
         field_env.push(eval(arena, &ctx.env, arg)?);
+    }
+    if ctor_decl.is_path()
+        && let Some(&dim_arg) = spec.args.get(ctor_decl.fields.len())
+    {
+        let _ = check(arena, ctx, Multiplicity::Zero, dim_arg, &Value::Interval)?;
     }
     Ok((
         Value::Data {
@@ -801,26 +814,31 @@ fn infer_data_elim(
     let motive_cl = check_motive(arena, ctx, data_ty.clone(), spec.motive)?;
     let u_scrut = check(arena, ctx, mode, spec.scrut, &data_ty)?;
 
+    let branch_cls: Vec<MultiClosure> = spec
+        .branches
+        .iter()
+        .map(|&b| MultiClosure::new(ctx.env.clone(), b))
+        .collect();
     let mut branch_usage: Option<UsageVec> = None;
     for (c_idx, (ctor_decl, &branch)) in decl.ctors.iter().zip(spec.branches).enumerate() {
         let ctor = u32::try_from(c_idx).unwrap_or(u32::MAX);
-        let u_branch = check_data_branch(
-            arena,
-            ctx,
-            mode,
-            &BranchSpec {
-                id: spec.id,
-                ctor,
-                ctor_decl,
-                param_vals: &param_vals,
-                motive_cl: &motive_cl,
-                branch,
-            },
-        )?;
-        branch_usage = match branch_usage {
-            None => Some(u_branch),
-            Some(acc) => Some(acc.join(&u_branch)?),
+        let b_spec = BranchSpec {
+            id: spec.id,
+            ctor,
+            ctor_decl,
+            param_vals: &param_vals,
+            motive_cl: &motive_cl,
+            branch,
         };
+        if let Some(boundary) = ctor_decl.boundary {
+            check_hit_branch(arena, ctx, &b_spec, boundary, &branch_cls)?;
+        } else {
+            let u_branch = check_data_branch(arena, ctx, mode, &b_spec)?;
+            branch_usage = match branch_usage {
+                None => Some(u_branch),
+                Some(acc) => Some(acc.join(&u_branch)?),
+            };
+        }
     }
 
     let total = match branch_usage {
@@ -895,6 +913,97 @@ fn check_data_branch(
     } else {
         Ok(u_branch)
     }
+}
+
+fn check_hit_branch(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    spec: &BranchSpec<'_>,
+    boundary: PathBoundary,
+    branch_cls: &[MultiClosure],
+) -> Result<(), TypeError> {
+    let base_env = ctx.env.clone();
+    let base_depth = ctx.depth();
+    let mut field_env = spec.param_vals.to_vec();
+    let mut field_vars = Vec::with_capacity(spec.ctor_decl.fields.len());
+    for field in &spec.ctor_decl.fields {
+        let field_ty = eval(arena, &field_env, field.ty)?;
+        let f_var = ctx.push(field_ty);
+        field_env.push(f_var.clone());
+        field_vars.push(f_var);
+    }
+
+    let rec_count = spec.ctor_decl.recursive_count();
+    for (f_var, field) in field_vars.iter().zip(&spec.ctor_decl.fields) {
+        if field.is_recursive {
+            let ih_ty = spec.motive_cl.apply(arena, f_var.clone())?;
+            let _ = ctx.push(ih_ty);
+        }
+    }
+    let dim_var = ctx.push_dim();
+
+    let mut ctor_args = field_vars.clone();
+    ctor_args.push(dim_var);
+    let ctor_val = Value::Ctor {
+        id: spec.id,
+        ctor: spec.ctor,
+        params: spec.param_vals.to_vec(),
+        args: ctor_args,
+    };
+    let branch_ty = spec.motive_cl.apply(arena, ctor_val)?;
+    let res = check(arena, ctx, Multiplicity::Zero, spec.branch, &branch_ty);
+    for _ in 0..=(spec.ctor_decl.fields.len() + rec_count) {
+        ctx.pop();
+    }
+    let _ = res?;
+
+    let mut ih_vals = Vec::with_capacity(rec_count);
+    for (f_var, field) in field_vars.iter().zip(&spec.ctor_decl.fields) {
+        if field.is_recursive {
+            ih_vals.push(eval_data_elim(
+                arena,
+                spec.id,
+                spec.param_vals,
+                spec.motive_cl,
+                branch_cls,
+                f_var.clone(),
+            )?);
+        }
+    }
+    let mut env0 = base_env;
+    env0.extend(field_vars.iter().cloned());
+    env0.extend(ih_vals.iter().cloned());
+    let mut env1 = env0.clone();
+    env0.push(Value::Dim(Dim::Zero));
+    env1.push(Value::Dim(Dim::One));
+
+    let actual_0 = eval(arena, &env0, spec.branch)?;
+    let actual_1 = eval(arena, &env1, spec.branch)?;
+    let left_val = eval(arena, &field_env, boundary.left)?;
+    let right_val = eval(arena, &field_env, boundary.right)?;
+    let expected_0 = eval_data_elim(
+        arena,
+        spec.id,
+        spec.param_vals,
+        spec.motive_cl,
+        branch_cls,
+        left_val,
+    )?;
+    let expected_1 = eval_data_elim(
+        arena,
+        spec.id,
+        spec.param_vals,
+        spec.motive_cl,
+        branch_cls,
+        right_val,
+    )?;
+    let check_depth = base_depth + u32::try_from(field_vars.len()).unwrap_or(0);
+    if !conv(arena, check_depth, &actual_0, &expected_0)?
+        || !conv(arena, check_depth, &actual_1, &expected_1)?
+    {
+        return Err(TypeError::HitBoundaryMismatch);
+    }
+    Ok(())
 }
 
 pub fn check(
@@ -1879,6 +1988,7 @@ mod tests {
                         ty: nat,
                         is_recursive: false,
                     }],
+                    boundary: None,
                 }],
             },
         );
@@ -1895,13 +2005,17 @@ mod tests {
                 params: Vec::new(),
                 level: Level::constant(0),
                 ctors: vec![
-                    CtorDecl { fields: Vec::new() },
+                    CtorDecl {
+                        fields: Vec::new(),
+                        boundary: None,
+                    },
                     CtorDecl {
                         fields: vec![FieldDecl {
                             mult: Multiplicity::One,
                             ty: self_list,
                             is_recursive: false,
                         }],
+                        boundary: None,
                     },
                 ],
             },

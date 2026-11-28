@@ -440,3 +440,88 @@ fn extracted_univalence_compiles_and_executes_correctly() {
         );
     }
 }
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn extracted_hits_compiles_and_executes_correctly() {
+    let hits_src = include_str!("../../../examples/hits.ap");
+    let rust_code = apollo_codegen::compile_source(hits_src);
+    assert!(rust_code.is_ok(), "codegen failed: {:?}", rust_code.err());
+    let Ok(code) = rust_code else {
+        return;
+    };
+    assert!(!code.contains("Loop"));
+    assert!(!code.contains("Swap"));
+
+    let tmp_dir = std::env::temp_dir().join(format!("apollo-codegen-hits-{}", std::process::id()));
+    let _ = fs::create_dir_all(&tmp_dir);
+    let lib_rs = tmp_dir.join("hits.rs");
+    let rlib_path = tmp_dir.join("libapollo_hits.rlib");
+    let driver_rs = tmp_dir.join("driver.rs");
+    let driver_exe = tmp_dir.join(if cfg!(windows) {
+        "driver.exe"
+    } else {
+        "driver"
+    });
+    let driver = r"
+        use apollo_hits::{S1, UPair};
+        fn main() {
+            let _ = S1::Base;
+            let p = apollo_hits::swapped_pair(3_u128, 4_u128);
+            assert!(matches!(p, UPair::Pair(4, 3)));
+            assert_eq!(apollo_hits::sum_upair(p), 7);
+            assert_eq!(apollo_hits::sum_upair(UPair::Pair(10, 32)), 42);
+        }
+    ";
+    assert!(fs::write(&lib_rs, &code).is_ok());
+    assert!(fs::write(&driver_rs, driver).is_ok());
+
+    let lib_out = Command::new("rustc")
+        .args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "-D",
+            "warnings",
+            "--crate-name",
+            "apollo_hits",
+            "-o",
+        ])
+        .arg(&rlib_path)
+        .arg(&lib_rs)
+        .output();
+    assert!(lib_out.is_ok());
+    if let Ok(res) = lib_out {
+        assert!(
+            res.status.success(),
+            "rustc rejected hits lib:\n{code}\nstderr:\n{}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+    }
+
+    let bin_out = Command::new("rustc")
+        .args(["--edition=2024", "-D", "warnings", "--extern"])
+        .arg(format!("apollo_hits={}", rlib_path.display()))
+        .arg("-o")
+        .arg(&driver_exe)
+        .arg(&driver_rs)
+        .output();
+    assert!(bin_out.is_ok());
+    if let Ok(res) = bin_out {
+        assert!(
+            res.status.success(),
+            "rustc rejected hits driver:\n{}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+    }
+
+    let run_out = Command::new(&driver_exe).output();
+    let _ = fs::remove_dir_all(&tmp_dir);
+    assert!(run_out.is_ok());
+    if let Ok(res) = run_out {
+        assert!(
+            res.status.success(),
+            "extracted hits binary failed:\n{}",
+            String::from_utf8_lossy(&res.stderr)
+        );
+    }
+}

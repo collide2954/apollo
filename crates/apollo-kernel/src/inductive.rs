@@ -1,9 +1,9 @@
 use std::fmt;
 
-use crate::check::{Ctx, TypeError, check_is_type};
+use crate::check::{Ctx, TypeError, check, check_is_type};
 use crate::level::Level;
 use crate::multiplicity::Multiplicity;
-use crate::nbe::{eval, quote};
+use crate::nbe::{Value, eval, quote};
 use crate::term::{DeBruijnLevel, Term, TermArena, TermId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -35,20 +35,37 @@ pub struct FieldDecl {
     pub is_recursive: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathBoundary {
+    pub left: TermId,
+    pub right: TermId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CtorDecl {
     pub fields: Vec<FieldDecl>,
+    pub boundary: Option<PathBoundary>,
 }
 
 impl CtorDecl {
+    #[must_use]
+    pub const fn is_path(&self) -> bool {
+        self.boundary.is_some()
+    }
+
     #[must_use]
     pub fn recursive_count(&self) -> usize {
         self.fields.iter().filter(|f| f.is_recursive).count()
     }
 
     #[must_use]
+    pub fn arg_arity(&self) -> usize {
+        self.fields.len() + usize::from(self.is_path())
+    }
+
+    #[must_use]
     pub fn branch_arity(&self) -> usize {
-        self.fields.len() + self.recursive_count()
+        self.fields.len() + self.recursive_count() + usize::from(self.is_path())
     }
 }
 
@@ -59,48 +76,20 @@ pub struct InductiveDecl {
     pub ctors: Vec<CtorDecl>,
 }
 
-fn any_mentions(arena: &TermArena, ids: &[TermId], target: InductiveId) -> bool {
-    ids.iter()
-        .any(|&id| term_mentions_inductive(arena, id, target))
+fn any_term(arena: &TermArena, ids: &[TermId], pred: &impl Fn(&Term) -> bool) -> bool {
+    ids.iter().any(|&id| term_any(arena, id, pred))
 }
 
-fn mentions_data_term(arena: &TermArena, term: &Term, target: InductiveId) -> bool {
-    match term {
-        Term::Data { id: did, params } => *did == target || any_mentions(arena, params, target),
-        Term::Ctor {
-            id: did,
-            params,
-            args,
-            ..
-        } => {
-            *did == target
-                || any_mentions(arena, params, target)
-                || any_mentions(arena, args, target)
-        }
-        Term::DataElim {
-            id: did,
-            params,
-            motive,
-            branches,
-            scrut,
-        } => {
-            *did == target
-                || any_mentions(arena, &[*motive, *scrut], target)
-                || any_mentions(arena, params, target)
-                || any_mentions(arena, branches, target)
-        }
-        _ => false,
-    }
-}
-
-#[must_use]
-pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveId) -> bool {
+fn term_any(arena: &TermArena, id: TermId, pred: &impl Fn(&Term) -> bool) -> bool {
     let Some(term) = arena.get(id) else {
         return false;
     };
+    if pred(term) {
+        return true;
+    }
     match term {
         Term::Lam { body: a, .. } | Term::Fst(a) | Term::Snd(a) | Term::PLam(a) | Term::Succ(a) => {
-            term_mentions_inductive(arena, *a, target)
+            term_any(arena, *a, pred)
         }
         Term::Pi {
             domain: a,
@@ -121,7 +110,7 @@ pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveI
         | Term::VoidElim {
             motive: a,
             scrut: b,
-        } => any_mentions(arena, &[*a, *b], target),
+        } => any_term(arena, &[*a, *b], pred),
         Term::Path {
             family: a,
             left: b,
@@ -136,7 +125,7 @@ pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveI
             dim: a,
             left: b,
             right: c,
-        } => any_mentions(arena, &[*a, *b, *c], target),
+        } => any_term(arena, &[*a, *b, *c], pred),
         Term::PApp {
             path: a,
             left: b,
@@ -166,14 +155,14 @@ pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveI
             base: b,
             step: c,
             scrut: d,
-        } => any_mentions(arena, &[*a, *b, *c, *d], target),
+        } => any_term(arena, &[*a, *b, *c, *d], pred),
         Term::VProj {
             dim,
             ty0,
             ty1,
             equiv,
             term,
-        } => any_mentions(arena, &[*dim, *ty0, *ty1, *equiv, *term], target),
+        } => any_term(arena, &[*dim, *ty0, *ty1, *equiv, *term], pred),
         Term::HCom {
             ty,
             src,
@@ -181,13 +170,47 @@ pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveI
             branches,
             cap,
         } => {
-            any_mentions(arena, &[*ty, *src, *dst, *cap], target)
+            any_term(arena, &[*ty, *src, *dst, *cap], pred)
                 || branches
                     .iter()
-                    .any(|(_, tube)| term_mentions_inductive(arena, *tube, target))
+                    .any(|(_, tube)| term_any(arena, *tube, pred))
         }
-        other => mentions_data_term(arena, other, target),
+        other => data_term_any(arena, other, pred),
     }
+}
+
+fn data_term_any(arena: &TermArena, term: &Term, pred: &impl Fn(&Term) -> bool) -> bool {
+    match term {
+        Term::Data { params, .. } => any_term(arena, params, pred),
+        Term::Ctor { params, args, .. } => {
+            any_term(arena, params, pred) || any_term(arena, args, pred)
+        }
+        Term::DataElim {
+            params,
+            motive,
+            branches,
+            scrut,
+            ..
+        } => {
+            any_term(arena, &[*motive, *scrut], pred)
+                || any_term(arena, params, pred)
+                || any_term(arena, branches, pred)
+        }
+        _ => false,
+    }
+}
+
+#[must_use]
+pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveId) -> bool {
+    term_any(arena, id, &|term| {
+        matches!(
+            term,
+            Term::Data { id: did, .. }
+                | Term::Ctor { id: did, .. }
+                | Term::DataElim { id: did, .. }
+                if *did == target
+        )
+    })
 }
 
 fn is_uniform_self_rec(
@@ -246,16 +269,58 @@ pub fn check_and_define_inductive(
     }
 }
 
+fn validate_path_boundaries(
+    arena: &TermArena,
+    ctx: &mut Ctx,
+    self_id: InductiveId,
+    param_vars: &[Value],
+    ctors: &[CtorDecl],
+) -> Result<(), TypeError> {
+    let data_ty = Value::Data {
+        id: self_id,
+        params: param_vars.to_vec(),
+    };
+    let uses_path_ctor = |term: &Term| {
+        matches!(
+            term,
+            Term::Ctor { id, ctor, .. }
+                if *id == self_id && ctors.get(*ctor as usize).is_some_and(CtorDecl::is_path)
+        )
+    };
+    for ctor in ctors {
+        let Some(boundary) = ctor.boundary else {
+            continue;
+        };
+        if term_any(arena, boundary.left, &uses_path_ctor)
+            || term_any(arena, boundary.right, &uses_path_ctor)
+        {
+            return Err(TypeError::HitBoundaryMismatch);
+        }
+        for field in &ctor.fields {
+            let ty_val = eval(arena, ctx.env(), field.ty)?;
+            let _ = ctx.push(ty_val);
+        }
+        let check_res = check(arena, ctx, Multiplicity::Zero, boundary.left, &data_ty)
+            .and_then(|_| check(arena, ctx, Multiplicity::Zero, boundary.right, &data_ty));
+        for _ in 0..ctor.fields.len() {
+            ctx.pop();
+        }
+        let _ = check_res?;
+    }
+    Ok(())
+}
+
 fn validate_inductive(
     arena: &mut TermArena,
     self_id: InductiveId,
     decl: &InductiveDecl,
 ) -> Result<Vec<CtorDecl>, TypeError> {
     let mut ctx = Ctx::new();
+    let mut param_vars = Vec::with_capacity(decl.params.len());
     for param in &decl.params {
         let _ = check_is_type(arena, &mut ctx, param.ty)?;
         let param_val = eval(arena, ctx.env(), param.ty)?;
-        let _ = ctx.push(param_val);
+        param_vars.push(ctx.push(param_val));
     }
 
     let param_count = decl.params.len();
@@ -289,16 +354,30 @@ fn validate_inductive(
         }
         checked_ctors.push(CtorDecl {
             fields: checked_fields,
+            boundary: ctor.boundary,
         });
     }
+
+    if checked_ctors.iter().any(CtorDecl::is_path) {
+        arena.set_inductive_raw(
+            self_id,
+            InductiveDecl {
+                params: decl.params.clone(),
+                level: decl.level.clone(),
+                ctors: checked_ctors.clone(),
+            },
+        );
+        validate_path_boundaries(arena, &mut ctx, self_id, &param_vars, &checked_ctors)?;
+    }
+
     Ok(checked_ctors)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CtorDecl, FieldDecl, InductiveDecl, InductiveId, ParamDecl, check_and_define_inductive,
-        term_mentions_inductive,
+        CtorDecl, FieldDecl, InductiveDecl, InductiveId, ParamDecl, PathBoundary,
+        check_and_define_inductive, term_mentions_inductive,
     };
     use crate::Value;
     use crate::check::{TypeError, check_closed};
@@ -317,13 +396,17 @@ mod tests {
             }],
             level: Level::zero(),
             ctors: vec![
-                CtorDecl { fields: Vec::new() },
+                CtorDecl {
+                    fields: Vec::new(),
+                    boundary: None,
+                },
                 CtorDecl {
                     fields: vec![FieldDecl {
                         mult: Multiplicity::One,
                         ty: v0,
                         is_recursive: false,
                     }],
+                    boundary: None,
                 },
             ],
         };
@@ -345,7 +428,10 @@ mod tests {
             }],
             level: Level::zero(),
             ctors: vec![
-                CtorDecl { fields: Vec::new() },
+                CtorDecl {
+                    fields: Vec::new(),
+                    boundary: None,
+                },
                 CtorDecl {
                     fields: vec![
                         FieldDecl {
@@ -359,6 +445,7 @@ mod tests {
                             is_recursive: false,
                         },
                     ],
+                    boundary: None,
                 },
             ],
         };
@@ -382,7 +469,10 @@ mod tests {
             }],
             level: Level::zero(),
             ctors: vec![
-                CtorDecl { fields: Vec::new() },
+                CtorDecl {
+                    fields: Vec::new(),
+                    boundary: None,
+                },
                 CtorDecl {
                     fields: vec![
                         FieldDecl {
@@ -401,6 +491,7 @@ mod tests {
                             is_recursive: false,
                         },
                     ],
+                    boundary: None,
                 },
             ],
         };
@@ -448,6 +539,7 @@ mod tests {
                         is_recursive: false,
                     },
                 ],
+                boundary: None,
             }],
         };
         let pt_id = check_and_define_inductive(&mut arena, pt_decl).unwrap_or(InductiveId(0));
@@ -534,6 +626,7 @@ mod tests {
                             is_recursive: false,
                         },
                     ],
+                    boundary: None,
                 }],
             },
         )
@@ -679,6 +772,7 @@ mod tests {
                         ty: neg_field,
                         is_recursive: false,
                     }],
+                    boundary: None,
                 }],
             },
         );
@@ -702,6 +796,7 @@ mod tests {
                         ty: disguised,
                         is_recursive: false,
                     }],
+                    boundary: None,
                 }],
             },
         );
@@ -720,6 +815,7 @@ mod tests {
                         ty: u0,
                         is_recursive: false,
                     }],
+                    boundary: None,
                 }],
             },
         );
@@ -743,6 +839,7 @@ mod tests {
                         ty: u0,
                         is_recursive: false,
                     }],
+                    boundary: None,
                 }],
             },
         );
@@ -880,6 +977,7 @@ mod tests {
                         ty: opt_a,
                         is_recursive: false,
                     }],
+                    boundary: None,
                 }],
             },
         );
@@ -927,5 +1025,274 @@ mod tests {
         assert!(term_mentions_inductive(&arena, h_ty, target));
         assert!(term_mentions_inductive(&arena, h_tube, target));
         assert!(!term_mentions_inductive(&arena, h_none, target));
+    }
+
+    #[test]
+    fn checks_circle_s1_upair_and_rejects_bad_hit_boundaries() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let bool_ty = arena.bool_ty();
+        let b_true = arena.bool_true();
+        let b_false = arena.bool_false();
+        let d0 = arena.dim_zero();
+        let d1 = arena.dim_one();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+
+        // Circle S1 { Base, Loop(<i>) = Base .. Base }
+        let s1_id = arena.next_inductive_id();
+        let s1_base = arena.ctor(s1_id, 0, Vec::new(), Vec::new());
+        let s1_res = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: Vec::new(),
+                level: Level::zero(),
+                ctors: vec![
+                    CtorDecl {
+                        fields: Vec::new(),
+                        boundary: None,
+                    },
+                    CtorDecl {
+                        fields: Vec::new(),
+                        boundary: Some(PathBoundary {
+                            left: s1_base,
+                            right: s1_base,
+                        }),
+                    },
+                ],
+            },
+        );
+        assert_eq!(s1_res, Ok(s1_id));
+        let s1_ty = arena.data(s1_id, Vec::new());
+
+        let loop_i = arena.ctor(s1_id, 1, Vec::new(), vec![v0]);
+        let loop_path = arena.plam(loop_i);
+        let loop_ty = arena.path(s1_ty, s1_base, s1_base);
+        assert_eq!(check_closed(&arena, loop_path, loop_ty), Ok(()));
+
+        // Loop(0) == Base, Loop(1) == Base; missing dim arg fails arity check.
+        let loop_0 = arena.ctor(s1_id, 1, Vec::new(), vec![d0]);
+        let loop_1 = arena.ctor(s1_id, 1, Vec::new(), vec![d1]);
+        assert_eq!(
+            eval(&arena, &[], loop_0).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(s1_base)
+        );
+        assert_eq!(
+            eval(&arena, &[], loop_1).and_then(|v| quote(&mut arena, 0, &v)),
+            Ok(s1_base)
+        );
+        let bad_loop_arity = arena.ctor(s1_id, 1, Vec::new(), Vec::new());
+        assert_eq!(
+            check_closed(&arena, bad_loop_arity, s1_ty),
+            Err(TypeError::ArityMismatch {
+                expected: 1,
+                actual: 0,
+            })
+        );
+
+        // S1 eliminator: coherent passes, incoherent fails with HitBoundaryMismatch.
+        let s1_to_bool = arena.pi(Multiplicity::One, s1_ty, bool_ty);
+        let ok_elim = arena.data_elim(s1_id, Vec::new(), bool_ty, vec![b_true, b_true], v0);
+        let ok_fn = arena.lam(Multiplicity::One, ok_elim);
+        assert_eq!(check_closed(&arena, ok_fn, s1_to_bool), Ok(()));
+
+        let bad_elim = arena.data_elim(s1_id, Vec::new(), bool_ty, vec![b_true, b_false], v0);
+        let bad_fn = arena.lam(Multiplicity::One, bad_elim);
+        assert_eq!(
+            check_closed(&arena, bad_fn, s1_to_bool),
+            Err(TypeError::HitBoundaryMismatch)
+        );
+
+        // Neutral HIT eliminator quote & conv with dim-using Loop branch (Path(Bool, true, true) @ i).
+        let refl_true = arena.plam(b_true);
+        let papp_i = arena.papp(refl_true, b_true, b_true, v0);
+        let neu_elim = arena.data_elim(s1_id, Vec::new(), bool_ty, vec![b_true, papp_i], v0);
+        let env1 = vec![Value::var(DeBruijnLevel(0))];
+        if let Ok(v_neu) = eval(&arena, &env1, neu_elim) {
+            assert!(quote(&mut arena, 1, &v_neu).is_ok());
+            assert_eq!(conv(&arena, 1, &v_neu, &v_neu), Ok(true));
+        }
+
+        // Cyclic boundary in left or right must be rejected and rolled back.
+        let bad_hit_id = arena.next_inductive_id();
+        let bad_b = arena.ctor(bad_hit_id, 0, Vec::new(), Vec::new());
+        let bad_l = arena.ctor(bad_hit_id, 1, Vec::new(), vec![d0]);
+        for (l, r) in [(bad_l, bad_b), (bad_b, bad_l)] {
+            let cyc = check_and_define_inductive(
+                &mut arena,
+                InductiveDecl {
+                    params: Vec::new(),
+                    level: Level::zero(),
+                    ctors: vec![
+                        CtorDecl {
+                            fields: Vec::new(),
+                            boundary: None,
+                        },
+                        CtorDecl {
+                            fields: Vec::new(),
+                            boundary: Some(PathBoundary { left: l, right: r }),
+                        },
+                    ],
+                },
+            );
+            assert_eq!(cyc, Err(TypeError::HitBoundaryMismatch));
+            assert_eq!(arena.next_inductive_id(), bad_hit_id);
+        }
+        assert_ne!(TypeError::HitBoundaryMismatch.to_string(), "");
+        let _ = (u0, v1, v2);
+    }
+
+    #[test]
+    fn checks_upair_asymmetry_rejection() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let bool_ty = arena.bool_ty();
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+
+        // UPair(0 A: Type 0) { Pair(1 a: A, 1 b: A), Swap(1 a: A, 1 b: A, <i>) = Pair(a, b) .. Pair(b, a) }
+        let up_id = arena.next_inductive_id();
+        let pair_ab = arena.ctor(up_id, 0, vec![v2], vec![v1, v0]);
+        let pair_ba = arena.ctor(up_id, 0, vec![v2], vec![v0, v1]);
+        let up_res = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: vec![ParamDecl {
+                    mult: Multiplicity::Zero,
+                    ty: u0,
+                }],
+                level: Level::zero(),
+                ctors: vec![
+                    CtorDecl {
+                        fields: vec![
+                            FieldDecl {
+                                mult: Multiplicity::Many,
+                                ty: v0,
+                                is_recursive: false,
+                            },
+                            FieldDecl {
+                                mult: Multiplicity::Many,
+                                ty: v1,
+                                is_recursive: false,
+                            },
+                        ],
+                        boundary: None,
+                    },
+                    CtorDecl {
+                        fields: vec![
+                            FieldDecl {
+                                mult: Multiplicity::Many,
+                                ty: v0,
+                                is_recursive: false,
+                            },
+                            FieldDecl {
+                                mult: Multiplicity::Many,
+                                ty: v1,
+                                is_recursive: false,
+                            },
+                        ],
+                        boundary: Some(PathBoundary {
+                            left: pair_ab,
+                            right: pair_ba,
+                        }),
+                    },
+                ],
+            },
+        );
+        assert_eq!(up_res, Ok(up_id));
+
+        // Asymmetric projection fails on right endpoint (Swap => a) and left endpoint (Swap => b).
+        let up_bool = arena.data(up_id, vec![bool_ty]);
+        let up_fn_ty = arena.pi(Multiplicity::One, up_bool, bool_ty);
+        for swap_body in [v2, v1] {
+            let asym = arena.data_elim(up_id, vec![bool_ty], bool_ty, vec![v1, swap_body], v0);
+            let asym_lam = arena.lam(Multiplicity::One, asym);
+            assert_eq!(
+                check_closed(&arena, asym_lam, up_fn_ty),
+                Err(TypeError::HitBoundaryMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn checks_recursive_truncation_hit_eliminator() {
+        let mut arena = TermArena::new();
+        let u0 = arena.universe(Level::zero());
+        let v0 = arena.var(Index(0));
+        let v1 = arena.var(Index(1));
+        let v2 = arena.var(Index(2));
+        let v3 = arena.var(Index(3));
+        let v4 = arena.var(Index(4));
+        let v6 = arena.var(Index(6));
+
+        // Recursive HIT: Trunc(0 A: Type 0) { In(1 x: A), Squash(1 x: Trunc(A), 1 y: Trunc(A), <i>) = x .. y }
+        let tr_id = arena.next_inductive_id();
+        let tr_v0 = arena.data(tr_id, vec![v0]);
+        let tr_v1 = arena.data(tr_id, vec![v1]);
+        let tr_res = check_and_define_inductive(
+            &mut arena,
+            InductiveDecl {
+                params: vec![ParamDecl {
+                    mult: Multiplicity::Zero,
+                    ty: u0,
+                }],
+                level: Level::zero(),
+                ctors: vec![
+                    CtorDecl {
+                        fields: vec![FieldDecl {
+                            mult: Multiplicity::One,
+                            ty: v0,
+                            is_recursive: false,
+                        }],
+                        boundary: None,
+                    },
+                    CtorDecl {
+                        fields: vec![
+                            FieldDecl {
+                                mult: Multiplicity::One,
+                                ty: tr_v0,
+                                is_recursive: false,
+                            },
+                            FieldDecl {
+                                mult: Multiplicity::One,
+                                ty: tr_v1,
+                                is_recursive: false,
+                            },
+                        ],
+                        boundary: Some(PathBoundary {
+                            left: v1,
+                            right: v0,
+                        }),
+                    },
+                ],
+            },
+        );
+        assert_eq!(tr_res, Ok(tr_id));
+
+        // trunc_rec: (0 A, 0 B, 1 f: (1 _: A) -> B, 0 p: (0 x: B, 0 y: B) -> Path(_ => B, x, y), 1 t: Trunc(A)) -> B
+        let tr_a = arena.data(tr_id, vec![v3]);
+        let b_path = arena.path(v4, v1, v0);
+        let p_inner = arena.pi(Multiplicity::Zero, v2, b_path);
+        let p_ty = arena.pi(Multiplicity::Zero, v1, p_inner);
+        let f_ty = arena.pi(Multiplicity::One, v1, v1);
+        let rec_ty_t = arena.pi(Multiplicity::One, tr_a, v3);
+        let rec_ty_p = arena.pi(Multiplicity::Zero, p_ty, rec_ty_t);
+        let rec_ty_f = arena.pi(Multiplicity::One, f_ty, rec_ty_p);
+        let rec_ty_b = arena.pi(Multiplicity::Zero, u0, rec_ty_f);
+        let rec_ty = arena.pi(Multiplicity::Zero, u0, rec_ty_b);
+
+        let in_branch = arena.app(v3, v0);
+        let p_ihx = arena.app(v6, v2);
+        let p_ihx_ihy = arena.app(p_ihx, v1);
+        let sq_branch = arena.papp(p_ihx_ihy, v2, v1, v0);
+        let tr_elim = arena.data_elim(tr_id, vec![v4], v4, vec![in_branch, sq_branch], v0);
+        let l1 = arena.lam(Multiplicity::One, tr_elim);
+        let l2 = arena.lam(Multiplicity::Zero, l1);
+        let l3 = arena.lam(Multiplicity::One, l2);
+        let l4 = arena.lam(Multiplicity::Zero, l3);
+        let rec_body = arena.lam(Multiplicity::Zero, l4);
+        assert_eq!(check_closed(&arena, rec_body, rec_ty), Ok(()));
     }
 }

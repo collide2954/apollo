@@ -5,6 +5,7 @@ pub mod level;
 pub mod multiplicity;
 pub mod nbe;
 pub mod term;
+mod vtype;
 
 pub use check::{Ctx, TypeError, check, check_closed, check_is_type, infer, infer_closed};
 pub use cubical::{Cof, Dim, DimVar, Face};

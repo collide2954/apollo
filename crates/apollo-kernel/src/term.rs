@@ -113,6 +113,24 @@ pub enum Term {
         branches: Vec<(CofTerm, TermId)>,
         cap: TermId,
     },
+    VType {
+        dim: TermId,
+        ty0: TermId,
+        ty1: TermId,
+        equiv: TermId,
+    },
+    VIn {
+        dim: TermId,
+        left: TermId,
+        right: TermId,
+    },
+    VProj {
+        dim: TermId,
+        ty0: TermId,
+        ty1: TermId,
+        equiv: TermId,
+        term: TermId,
+    },
     Unit,
     Tt,
     UnitElim {
@@ -449,6 +467,39 @@ impl TermArena {
     }
 
     #[must_use]
+    pub fn v_type(&mut self, dim: TermId, ty0: TermId, ty1: TermId, equiv: TermId) -> TermId {
+        self.intern(Term::VType {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+        })
+    }
+
+    #[must_use]
+    pub fn v_in(&mut self, dim: TermId, left: TermId, right: TermId) -> TermId {
+        self.intern(Term::VIn { dim, left, right })
+    }
+
+    #[must_use]
+    pub fn v_proj(
+        &mut self,
+        dim: TermId,
+        ty0: TermId,
+        ty1: TermId,
+        equiv: TermId,
+        term: TermId,
+    ) -> TermId {
+        self.intern(Term::VProj {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+            term,
+        })
+    }
+
+    #[must_use]
     pub fn data(&mut self, id: InductiveId, params: Vec<TermId>) -> TermId {
         self.intern(Term::Data { id, params })
     }
@@ -597,7 +648,46 @@ impl TermArena {
                     self.format_term(*cap)
                 )
             }
+            Term::VType { .. } | Term::VIn { .. } | Term::VProj { .. } => self.format_vtype(term),
             other => self.format_inductive(other),
+        }
+    }
+
+    fn format_vtype(&self, term: &Term) -> String {
+        match term {
+            Term::VType {
+                dim,
+                ty0,
+                ty1,
+                equiv,
+            } => format!(
+                "V({}, {}, {}, {})",
+                self.format_term(*dim),
+                self.format_term(*ty0),
+                self.format_term(*ty1),
+                self.format_term(*equiv)
+            ),
+            Term::VIn { dim, left, right } => format!(
+                "vin({}, {}, {})",
+                self.format_term(*dim),
+                self.format_term(*left),
+                self.format_term(*right)
+            ),
+            Term::VProj {
+                dim,
+                ty0,
+                ty1,
+                equiv,
+                term,
+            } => format!(
+                "vproj({}, {}, {}, {}, {})",
+                self.format_term(*dim),
+                self.format_term(*ty0),
+                self.format_term(*ty1),
+                self.format_term(*equiv),
+                self.format_term(*term)
+            ),
+            _ => String::new(),
         }
     }
 

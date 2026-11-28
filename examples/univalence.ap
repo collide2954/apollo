@@ -1,0 +1,66 @@
+fn not(1 b: Bool) -> Bool {
+    match b {
+        true => false,
+        false => true,
+    }
+}
+
+theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+    match b as |x| Path(_ => Bool, not(not(x)), x) {
+        true => <i> true,
+        false => <i> false,
+    }
+}
+
+theorem Equiv(0 A: Type 0, 0 B: Type 0) -> Type 0 {
+    Sigma(
+        0 f: (1 _: A) -> B,
+        Sigma(
+            0 g: (1 _: B) -> A,
+            Sigma(
+                0 sec: (0 b: B) -> Path(_ => B, f(g(b)), b),
+                (0 a: A) -> Path(_ => A, g(f(a)), a)
+            )
+        )
+    )
+}
+
+theorem not_equiv() -> Equiv(Bool, Bool) {
+    (not, (not, (not_not, not_not)))
+}
+
+theorem ua(
+    0 A: Type 0,
+    0 B: Type 0,
+    0 e: Equiv(A, B),
+) -> Path(_ => Type 0, A, B) {
+    <i> V(i, A, B, e)
+}
+
+theorem bool_flip_path() -> Path(_ => Type 0, Bool, Bool) {
+    ua(Bool, Bool, not_equiv)
+}
+
+theorem flip_true_computes() -> Path(_ => Bool, coe(i => bool_flip_path @ i, 0, 1, true), false) {
+    <i> false
+}
+
+theorem flip_inv_computes() -> Path(_ => Bool, coe(i => bool_flip_path @ i, 1, 0, false), true) {
+    <i> true
+}
+
+theorem flip_dep_path() -> Path(i => bool_flip_path @ i, true, false) {
+    <i> vin(i, true, false)
+}
+
+theorem vproj_computes() -> Path(_ => Bool, vproj(0, Bool, Bool, not_equiv, true), false) {
+    <i> false
+}
+
+fn flip_via_univalence(1 b: Bool) -> Bool {
+    coe(i => bool_flip_path @ i, 0, 1, b)
+}
+
+fn flip_back_via_univalence(1 b: Bool) -> Bool {
+    coe(i => bool_flip_path @ i, 1, 0, b)
+}

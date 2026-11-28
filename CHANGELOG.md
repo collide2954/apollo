@@ -5,6 +5,14 @@ This project uses Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-27
+
+### Added
+
+- Add Cartesian V-types (`V`, `vin`, `vproj`) and computational univalence coercion rules in `apollo-kernel`.
+- Add `V`, `vin`, and `vproj` surface syntax and elaboration in `apollo-syntax` and `apollo-elab`.
+- Add univalence normalization and proof erasure in `apollo-codegen`, `examples/univalence.ap`, and the browser playground.
+
 ## [0.9.0] - 2026-11-27
 
 ### Added

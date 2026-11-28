@@ -424,23 +424,19 @@ impl<'a> DeclLowerer<'a> {
             Term::Pair { first, second } => self.lower_pair(first, second, expected),
             Term::Fst(pair) => self.lower_proj(pair, true),
             Term::Snd(pair) => self.lower_proj(pair, false),
-            Term::Coe { .. } | Term::HCom { .. } | Term::PApp { .. } => {
-                self.lower_cubical(id, expected)
-            }
-            Term::PLam(_) | Term::Path { .. } | Term::Interval | Term::DimZero | Term::DimOne => {
-                Err(CodegenError::UnreducibleCubical {
-                    decl: self.decl_name.clone(),
-                })
-            }
-            Term::Tt
-            | Term::UnitElim { .. }
-            | Term::VoidElim { .. }
-            | Term::True
-            | Term::False
-            | Term::BoolElim { .. }
-            | Term::Zero
-            | Term::Succ(_)
-            | Term::NatElim { .. } => self.lower_inductive(&term),
+            Term::Coe { .. }
+            | Term::HCom { .. }
+            | Term::PApp { .. }
+            | Term::VIn { .. }
+            | Term::VProj { .. } => self.lower_cubical(id, expected),
+            Term::PLam(_)
+            | Term::Path { .. }
+            | Term::VType { .. }
+            | Term::Interval
+            | Term::DimZero
+            | Term::DimOne => Err(CodegenError::UnreducibleCubical {
+                decl: self.decl_name.clone(),
+            }),
             Term::Ctor {
                 id,
                 ctor,
@@ -454,16 +450,7 @@ impl<'a> DeclLowerer<'a> {
                 branches,
                 scrut,
             } => self.lower_data_elim(id, &params, motive, &branches, scrut, expected),
-            Term::Universe(_)
-            | Term::Pi { .. }
-            | Term::Sigma { .. }
-            | Term::Unit
-            | Term::Void
-            | Term::Bool
-            | Term::Nat
-            | Term::Data { .. } => Err(CodegenError::UnsupportedExpr {
-                decl: self.decl_name.clone(),
-            }),
+            _ => self.lower_inductive(&term),
         }
     }
 
@@ -643,6 +630,9 @@ impl<'a> DeclLowerer<'a> {
                 Term::Coe { .. }
                 | Term::HCom { .. }
                 | Term::PApp { .. }
+                | Term::VIn { .. }
+                | Term::VProj { .. }
+                | Term::VType { .. }
                 | Term::PLam(_)
                 | Term::Path { .. }
                 | Term::Interval
@@ -1781,6 +1771,61 @@ pub fn r#impl<A>(r#type: A) -> A {
             assert!(code.contains("__apollo_rec_0(xs, ys.clone())"));
             assert!(code.contains("append(v3.clone(), v3)"));
             assert!(code.contains("add(v3, v3)"));
+        }
+    }
+
+    #[test]
+    fn extracts_computational_univalence_to_zero_overhead_rust() {
+        let src = r"
+            fn not(1 b: Bool) -> Bool {
+                match b { true => false, false => true }
+            }
+            theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+                match b as |x| Path(_ => Bool, not(not(x)), x) {
+                    true => <i> true,
+                    false => <i> false,
+                }
+            }
+            theorem Equiv(0 A: Type 0, 0 B: Type 0) -> Type 0 {
+                Sigma(0 f: (1 _: A) -> B, Sigma(0 g: (1 _: B) -> A, Sigma(0 sec: (0 b: B) -> Path(_ => B, f(g(b)), b), (0 a: A) -> Path(_ => A, g(f(a)), a))))
+            }
+            theorem not_equiv() -> Equiv(Bool, Bool) {
+                (not, (not, (not_not, not_not)))
+            }
+            theorem ua(0 A: Type 0, 0 B: Type 0, 0 e: Equiv(A, B)) -> Path(_ => Type 0, A, B) {
+                <i> V(i, A, B, e)
+            }
+            theorem bool_flip() -> Path(_ => Type 0, Bool, Bool) {
+                ua(Bool, Bool, not_equiv)
+            }
+            fn flip_via_ua(1 b: Bool) -> Bool {
+                coe(i => bool_flip @ i, 0, 1, b)
+            }
+            fn flip_back_via_ua(1 b: Bool) -> Bool {
+                coe(i => bool_flip @ i, 1, 0, b)
+            }
+            fn flip_via_vproj(1 b: Bool) -> Bool {
+                vproj(0, Bool, Bool, not_equiv, b)
+            }
+            fn keep_via_vin(1 b: Bool) -> Bool {
+                vin(0, b, false)
+            }
+        ";
+        let emitted = compile_source(src);
+        assert!(emitted.is_ok(), "unexpected error: {:?}", emitted.err());
+        if let Ok(code) = emitted {
+            assert!(!code.contains("bool_flip"));
+            assert!(!code.contains("not_equiv"));
+            assert!(code.contains(
+                "pub fn flip_via_ua(b: bool) -> bool {\n    if b { false } else { true }\n}"
+            ));
+            assert!(code.contains(
+                "pub fn flip_back_via_ua(b: bool) -> bool {\n    if b { false } else { true }\n}"
+            ));
+            assert!(code.contains(
+                "pub fn flip_via_vproj(b: bool) -> bool {\n    if b { false } else { true }\n}"
+            ));
+            assert!(code.contains("pub fn keep_via_vin(b: bool) -> bool {\n    b\n}"));
         }
     }
 }

@@ -666,6 +666,9 @@ impl<'a> Parser<'a> {
             TokenKind::Path => self.parse_path(),
             TokenKind::Coe => self.parse_coe(),
             TokenKind::HCom => self.parse_hcom(),
+            TokenKind::VType => self.parse_vtype(),
+            TokenKind::VIn => self.parse_vin(),
+            TokenKind::VProj => self.parse_vproj(),
             TokenKind::Unit => Ok(self.single_token_expr(ExprKind::Unit, token.span)),
             TokenKind::Void => Ok(self.single_token_expr(ExprKind::Void, token.span)),
             TokenKind::Bool => Ok(self.single_token_expr(ExprKind::Bool, token.span)),
@@ -782,6 +785,72 @@ impl<'a> Parser<'a> {
                 dst: Box::new(dst),
                 branches,
                 cap: Box::new(cap),
+            },
+            span: start.merge(end),
+        })
+    }
+
+    fn parse_vtype(&mut self) -> Result<Expr, ParseError> {
+        let start = self.expect(&TokenKind::VType, "'V'")?;
+        let _ = self.expect(&TokenKind::LParen, "'('")?;
+        let dim = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let ty0 = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let ty1 = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let equiv = self.parse_expr()?;
+        let end = self.expect(&TokenKind::RParen, "')'")?;
+        Ok(Expr {
+            kind: ExprKind::VType {
+                dim: Box::new(dim),
+                ty0: Box::new(ty0),
+                ty1: Box::new(ty1),
+                equiv: Box::new(equiv),
+            },
+            span: start.merge(end),
+        })
+    }
+
+    fn parse_vin(&mut self) -> Result<Expr, ParseError> {
+        let start = self.expect(&TokenKind::VIn, "'vin'")?;
+        let _ = self.expect(&TokenKind::LParen, "'('")?;
+        let dim = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let left = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let right = self.parse_expr()?;
+        let end = self.expect(&TokenKind::RParen, "')'")?;
+        Ok(Expr {
+            kind: ExprKind::VIn {
+                dim: Box::new(dim),
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            span: start.merge(end),
+        })
+    }
+
+    fn parse_vproj(&mut self) -> Result<Expr, ParseError> {
+        let start = self.expect(&TokenKind::VProj, "'vproj'")?;
+        let _ = self.expect(&TokenKind::LParen, "'('")?;
+        let dim = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let ty0 = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let ty1 = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let equiv = self.parse_expr()?;
+        let _ = self.expect(&TokenKind::Comma, "','")?;
+        let term = self.parse_expr()?;
+        let end = self.expect(&TokenKind::RParen, "')'")?;
+        Ok(Expr {
+            kind: ExprKind::VProj {
+                dim: Box::new(dim),
+                ty0: Box::new(ty0),
+                ty1: Box::new(ty1),
+                equiv: Box::new(equiv),
+                term: Box::new(term),
             },
             span: start.merge(end),
         })
@@ -1306,6 +1375,27 @@ mod tests {
         assert!(parse_expr("x.(").is_err());
         assert!(parse_expr("Option::Some(zero)").is_ok());
         assert!(parse_expr("Option::None").is_ok());
+        assert!(matches!(
+            parse_expr("V(i, Bool, Bool, e)"),
+            Ok(crate::Expr {
+                kind: ExprKind::VType { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse_expr("vin(i, true, false)"),
+            Ok(crate::Expr {
+                kind: ExprKind::VIn { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse_expr("vproj(i, Bool, Bool, e, x)"),
+            Ok(crate::Expr {
+                kind: ExprKind::VProj { .. },
+                ..
+            })
+        ));
         assert!(parse_expr("match (Point { x: zero, y: zero }) { Point { x, y } => x }").is_ok());
         assert!(matches!(
             parse_expr("Point(Nat) { x: zero, y: succ(zero) }"),

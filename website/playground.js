@@ -96,6 +96,44 @@ fn mk_box(1 n: Nat) -> BoxedType {
 }
 `,
   },
+  univalence: {
+    label: "Computational Univalence (V-types and ua)",
+    code: `fn not(1 b: Bool) -> Bool {
+    match b {
+        true => false,
+        false => true,
+    }
+}
+
+theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+    match b as |x| Path(_ => Bool, not(not(x)), x) {
+        true => <i> true,
+        false => <i> false,
+    }
+}
+
+theorem Equiv(0 A: Type 0, 0 B: Type 0) -> Type 0 {
+    Sigma(0 f: (1 _: A) -> B, Sigma(0 g: (1 _: B) -> A, Sigma(0 sec: (0 b: B) -> Path(_ => B, f(g(b)), b), (0 a: A) -> Path(_ => A, g(f(a)), a))))
+}
+
+theorem not_equiv() -> Equiv(Bool, Bool) {
+    (not, (not, (not_not, not_not)))
+}
+
+theorem ua(0 A: Type 0, 0 B: Type 0, 0 e: Equiv(A, B)) -> Path(_ => Type 0, A, B) {
+    <i> V(i, A, B, e)
+}
+
+theorem bool_flip() -> Path(_ => Type 0, Bool, Bool) {
+    ua(Bool, Bool, not_equiv)
+}
+
+// Transporting across the Univalence path computes to zero-overhead Rust!
+fn flip_via_univalence(1 b: Bool) -> Bool {
+    coe(i => bool_flip @ i, 0, 1, b)
+}
+`,
+  },
 };
 
 function encodeBase64Url(text) {

@@ -247,6 +247,13 @@ pub enum Neutral {
         branches: Vec<(Cof, Closure)>,
         cap: Arc<Value>,
     },
+    VProj {
+        dim: Dim,
+        ty0: Arc<Value>,
+        ty1: Arc<Value>,
+        equiv: Arc<Value>,
+        term: Arc<Self>,
+    },
     UnitElim {
         motive: Closure,
         on_unit: Arc<Value>,
@@ -306,6 +313,17 @@ pub enum Value {
         right: Arc<Self>,
     },
     PLam(Closure),
+    VType {
+        dim: Dim,
+        ty0: Arc<Self>,
+        ty1: Arc<Self>,
+        equiv: Arc<Self>,
+    },
+    VIn {
+        dim: Dim,
+        left: Arc<Self>,
+        right: Arc<Self>,
+    },
     Unit,
     Tt,
     Void,
@@ -523,6 +541,76 @@ fn eval_inductive(
         }
         Term::Data { .. } | Term::Ctor { .. } | Term::DataElim { .. } => {
             eval_data_term(arena, env, id, term)
+        }
+        Term::VType { .. } | Term::VIn { .. } | Term::VProj { .. } => {
+            eval_v_term(arena, env, id, term)
+        }
+        _ => Err(EvalError::InvalidTermId(id)),
+    }
+}
+
+fn eval_v_term(
+    arena: &TermArena,
+    env: &[Value],
+    id: TermId,
+    term: &Term,
+) -> Result<Value, EvalError> {
+    match term {
+        Term::VType {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+        } => match eval(arena, env, *dim)? {
+            Value::Dim(Dim::Zero) => eval(arena, env, *ty0),
+            Value::Dim(Dim::One) => eval(arena, env, *ty1),
+            Value::Dim(d) => Ok(Value::VType {
+                dim: d,
+                ty0: Arc::new(eval(arena, env, *ty0)?),
+                ty1: Arc::new(eval(arena, env, *ty1)?),
+                equiv: Arc::new(eval(arena, env, *equiv)?),
+            }),
+            _ => eval(arena, env, *ty1),
+        },
+        Term::VIn { dim, left, right } => match eval(arena, env, *dim)? {
+            Value::Dim(Dim::Zero) => eval(arena, env, *left),
+            Value::Dim(Dim::One) => eval(arena, env, *right),
+            Value::Dim(d) => Ok(Value::VIn {
+                dim: d,
+                left: Arc::new(eval(arena, env, *left)?),
+                right: Arc::new(eval(arena, env, *right)?),
+            }),
+            _ => eval(arena, env, *right),
+        },
+        Term::VProj {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+            term: inner,
+        } => {
+            let d_val = eval(arena, env, *dim)?;
+            let val = eval(arena, env, *inner)?;
+            match d_val {
+                Value::Dim(Dim::Zero) => {
+                    let equiv_val = eval(arena, env, *equiv)?;
+                    let fwd = proj_fst(&equiv_val);
+                    apply(arena, &fwd, val)
+                }
+                Value::Dim(Dim::One) => Ok(val),
+                Value::Dim(d) => match val {
+                    Value::VIn { right, .. } => Ok((*right).clone()),
+                    Value::Neutral(neutral) => Ok(Value::Neutral(Arc::new(Neutral::VProj {
+                        dim: d,
+                        ty0: Arc::new(eval(arena, env, *ty0)?),
+                        ty1: Arc::new(eval(arena, env, *ty1)?),
+                        equiv: Arc::new(eval(arena, env, *equiv)?),
+                        term: neutral,
+                    }))),
+                    other => Ok(other),
+                },
+                _ => Ok(val),
+            }
         }
         _ => Err(EvalError::InvalidTermId(id)),
     }
@@ -833,12 +921,79 @@ pub fn coe_line(
                 second: Arc::new(c1),
             })
         }
+        Value::VType {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+        } => coe_v_line(arena, line, src, dst, term, (dim, &ty0, &ty1, &equiv)),
         _ => Ok(Value::Neutral(Arc::new(Neutral::Coe {
             line: Box::new(line.clone()),
             src,
             dst,
             term: Arc::new(term),
         }))),
+    }
+}
+
+fn coe_v_line(
+    arena: &TermArena,
+    line: &TypeLine,
+    src: Dim,
+    dst: Dim,
+    term: Value,
+    v_parts: (Dim, &Value, &Value, &Value),
+) -> Result<Value, EvalError> {
+    let (dim, ty0, ty1, equiv) = v_parts;
+    let probe_a = Dim::Var(DimVar(u32::MAX));
+    let probe_b = Dim::Var(DimVar(u32::MAX - 1));
+    let neutral_coe = |tm: Value| {
+        Ok(Value::Neutral(Arc::new(Neutral::Coe {
+            line: Box::new(line.clone()),
+            src,
+            dst,
+            term: Arc::new(tm),
+        })))
+    };
+    if dim != probe_a {
+        return neutral_coe(term);
+    }
+    let Value::VType {
+        dim: dim_b,
+        ty0: ty0_b,
+        ty1: ty1_b,
+        equiv: equiv_b,
+    } = line.apply(arena, probe_b)?
+    else {
+        return neutral_coe(term);
+    };
+    let check_depth = 1_000_000;
+    if dim_b != probe_b
+        || !conv(arena, check_depth, ty0, &ty0_b)?
+        || !conv(arena, check_depth, ty1, &ty1_b)?
+        || !conv(arena, check_depth, equiv, &equiv_b)?
+    {
+        return neutral_coe(term);
+    }
+    match (src, dst) {
+        (Dim::Zero, Dim::One) => {
+            let fwd = proj_fst(equiv);
+            apply(arena, &fwd, term)
+        }
+        (Dim::One, Dim::Zero) => {
+            let inv = proj_fst(&proj_snd(equiv));
+            apply(arena, &inv, term)
+        }
+        (Dim::Zero, Dim::Var(_)) => {
+            let fwd = proj_fst(equiv);
+            let right = apply(arena, &fwd, term.clone())?;
+            Ok(Value::VIn {
+                dim: dst,
+                left: Arc::new(term),
+                right: Arc::new(right),
+            })
+        }
+        _ => neutral_coe(term),
     }
 }
 
@@ -957,6 +1112,7 @@ pub fn quote(arena: &mut TermArena, depth: u32, value: &Value) -> Result<TermId,
             let body_id = quote(arena, depth + 1, &body_val)?;
             Ok(arena.plam(body_id))
         }
+        v @ (Value::VType { .. } | Value::VIn { .. }) => quote_v_value(arena, depth, v),
         Value::Unit => Ok(arena.unit()),
         Value::Tt => Ok(arena.tt()),
         Value::Void => Ok(arena.void()),
@@ -993,6 +1149,30 @@ pub fn quote(arena: &mut TermArena, depth: u32, value: &Value) -> Result<TermId,
             Ok(arena.ctor(*id, *ctor, param_ids, arg_ids))
         }
         Value::Neutral(neutral) => quote_neutral(arena, depth, neutral),
+    }
+}
+
+fn quote_v_value(arena: &mut TermArena, depth: u32, value: &Value) -> Result<TermId, EvalError> {
+    match value {
+        Value::VType {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+        } => {
+            let dim_id = quote(arena, depth, &Value::Dim(*dim))?;
+            let ty0_id = quote(arena, depth, ty0)?;
+            let ty1_id = quote(arena, depth, ty1)?;
+            let equiv_id = quote(arena, depth, equiv)?;
+            Ok(arena.v_type(dim_id, ty0_id, ty1_id, equiv_id))
+        }
+        Value::VIn { dim, left, right } => {
+            let dim_id = quote(arena, depth, &Value::Dim(*dim))?;
+            let left_id = quote(arena, depth, left)?;
+            let right_id = quote(arena, depth, right)?;
+            Ok(arena.v_in(dim_id, left_id, right_id))
+        }
+        _ => Ok(arena.tt()),
     }
 }
 
@@ -1066,6 +1246,20 @@ fn quote_neutral(
             }
             let cap_id = quote(arena, depth, cap)?;
             Ok(arena.hcom(ty_id, src_id, dst_id, quoted_branches, cap_id))
+        }
+        Neutral::VProj {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+            term,
+        } => {
+            let dim_id = quote(arena, depth, &Value::Dim(*dim))?;
+            let ty0_id = quote(arena, depth, ty0)?;
+            let ty1_id = quote(arena, depth, ty1)?;
+            let equiv_id = quote(arena, depth, equiv)?;
+            let term_id = quote_neutral(arena, depth, term)?;
+            Ok(arena.v_proj(dim_id, ty0_id, ty1_id, equiv_id, term_id))
         }
         other => quote_neutral_inductive(arena, depth, other),
     }
@@ -1298,6 +1492,47 @@ pub fn conv(arena: &TermArena, depth: u32, lhs: &Value, rhs: &Value) -> Result<b
         (Value::Succ(p1), Value::Succ(p2)) => conv(arena, depth, p1, p2),
         (Value::Neutral(n1), Value::Neutral(n2)) => conv_neutral(arena, depth, n1, n2),
         (l @ (Value::Data { .. } | Value::Ctor { .. }), r) => conv_data_value(arena, depth, l, r),
+        (l @ (Value::VType { .. } | Value::VIn { .. }), r) => conv_v_value(arena, depth, l, r),
+        _ => Ok(false),
+    }
+}
+
+fn conv_v_value(
+    arena: &TermArena,
+    depth: u32,
+    lhs: &Value,
+    rhs: &Value,
+) -> Result<bool, EvalError> {
+    match (lhs, rhs) {
+        (
+            Value::VType {
+                dim: d1,
+                ty0: a1,
+                ty1: b1,
+                equiv: e1,
+            },
+            Value::VType {
+                dim: d2,
+                ty0: a2,
+                ty1: b2,
+                equiv: e2,
+            },
+        ) => Ok(d1 == d2
+            && conv(arena, depth, a1, a2)?
+            && conv(arena, depth, b1, b2)?
+            && conv(arena, depth, e1, e2)?),
+        (
+            Value::VIn {
+                dim: d1,
+                left: l1,
+                right: r1,
+            },
+            Value::VIn {
+                dim: d2,
+                left: l2,
+                right: r2,
+            },
+        ) => Ok(d1 == d2 && conv(arena, depth, l1, l2)? && conv(arena, depth, r1, r2)?),
         _ => Ok(false),
     }
 }
@@ -1427,6 +1662,26 @@ fn conv_neutral(
             }
             Ok(true)
         }
+        (
+            Neutral::VProj {
+                dim: d1,
+                ty0: a1,
+                ty1: b1,
+                equiv: e1,
+                term: t1,
+            },
+            Neutral::VProj {
+                dim: d2,
+                ty0: a2,
+                ty1: b2,
+                equiv: e2,
+                term: t2,
+            },
+        ) => Ok(d1 == d2
+            && conv(arena, depth, a1, a2)?
+            && conv(arena, depth, b1, b2)?
+            && conv(arena, depth, e1, e2)?
+            && conv_neutral(arena, depth, t1, t2)?),
         other => conv_neutral_inductive(arena, depth, other.0, other.1),
     }
 }

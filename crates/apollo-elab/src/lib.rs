@@ -374,6 +374,16 @@ impl Elaborator {
                 motive,
                 arms,
             } => self.elab_match(scrut, motive.as_ref(), arms, expected, expr.span),
+            _ => self.elab_ext_expr(expr, expected),
+        }
+    }
+
+    fn elab_ext_expr(
+        &mut self,
+        expr: &Expr,
+        expected: Option<&Value>,
+    ) -> Result<TermId, ElabError> {
+        match &expr.kind {
             ExprKind::Ctor {
                 type_name,
                 ctor_name,
@@ -385,6 +395,43 @@ impl Elaborator {
                 fields,
             } => self.elab_struct_lit(type_name, type_args, fields, expected, expr.span),
             ExprKind::Field { target, name } => self.elab_field(target, name, expr.span),
+            ExprKind::VType {
+                dim,
+                ty0,
+                ty1,
+                equiv,
+            } => {
+                let dim_id = self.elab_expr(dim, Some(&Value::Interval))?;
+                let ty0_id = self.elab_expr(ty0, None)?;
+                let ty1_id = self.elab_expr(ty1, None)?;
+                let equiv_id = self.elab_expr(equiv, None)?;
+                Ok(self.arena.v_type(dim_id, ty0_id, ty1_id, equiv_id))
+            }
+            ExprKind::VIn { dim, left, right } => {
+                let dim_id = self.elab_expr(dim, Some(&Value::Interval))?;
+                let (exp_left, exp_right) = match expected {
+                    Some(Value::VType { ty0, ty1, .. }) => (Some(ty0.as_ref()), Some(ty1.as_ref())),
+                    _ => (None, None),
+                };
+                let left_id = self.elab_expr(left, exp_left)?;
+                let right_id = self.elab_expr(right, exp_right)?;
+                Ok(self.arena.v_in(dim_id, left_id, right_id))
+            }
+            ExprKind::VProj {
+                dim,
+                ty0,
+                ty1,
+                equiv,
+                term,
+            } => {
+                let dim_id = self.elab_expr(dim, Some(&Value::Interval))?;
+                let ty0_id = self.elab_expr(ty0, None)?;
+                let ty1_id = self.elab_expr(ty1, None)?;
+                let equiv_id = self.elab_expr(equiv, None)?;
+                let term_id = self.elab_expr(term, None)?;
+                Ok(self.arena.v_proj(dim_id, ty0_id, ty1_id, equiv_id, term_id))
+            }
+            _ => Ok(self.arena.tt()),
         }
     }
 
@@ -1355,5 +1402,46 @@ mod tests {
             }
         ";
         assert!(check_source(ok_extra).is_ok());
+    }
+
+    #[test]
+    fn elaborates_vtypes_univalence_vin_and_vproj() {
+        let src = r"
+            fn not(1 b: Bool) -> Bool {
+                match b { true => false, false => true }
+            }
+            theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+                match b as |x| Path(_ => Bool, not(not(x)), x) {
+                    true => <i> true,
+                    false => <i> false,
+                }
+            }
+            theorem Equiv(0 A: Type 0, 0 B: Type 0) -> Type 0 {
+                Sigma(0 f: (1 _: A) -> B, Sigma(0 g: (1 _: B) -> A, Sigma(0 sec: (0 b: B) -> Path(_ => B, f(g(b)), b), (0 a: A) -> Path(_ => A, g(f(a)), a))))
+            }
+            theorem not_equiv() -> Equiv(Bool, Bool) {
+                (not, (not, (not_not, not_not)))
+            }
+            theorem ua(0 A: Type 0, 0 B: Type 0, 0 e: Equiv(A, B)) -> Path(_ => Type 0, A, B) {
+                <i> V(i, A, B, e)
+            }
+            theorem bool_flip() -> Path(_ => Type 0, Bool, Bool) {
+                ua(Bool, Bool, not_equiv)
+            }
+            theorem flip_dep() -> Path(i => bool_flip @ i, true, false) {
+                <i> vin(i, true, false)
+            }
+            theorem vp_zero() -> Path(_ => Bool, vproj(0, Bool, Bool, not_equiv, true), false) {
+                <i> false
+            }
+            fn flip_ua(1 b: Bool) -> Bool {
+                coe(i => bool_flip @ i, 0, 1, b)
+            }
+        ";
+        let checked = check_source(src);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+        if let Ok(module) = checked {
+            assert_eq!(module.decls.len(), 9);
+        }
     }
 }

@@ -47,6 +47,9 @@ pub enum TypeError {
     },
     NonStrictlyPositive,
     UniverseLevelTooHigh,
+    InvalidEquivalence,
+    VBoundaryMismatch,
+    CannotInferVIn,
 }
 
 impl From<EvalError> for TypeError {
@@ -110,6 +113,13 @@ impl fmt::Display for TypeError {
             Self::UniverseLevelTooHigh => {
                 f.write_str("constructor field universe exceeds inductive type universe")
             }
+            Self::InvalidEquivalence => {
+                f.write_str("expected a valid equivalence (f, g, sec, ret)")
+            }
+            Self::VBoundaryMismatch => {
+                f.write_str("V-type introduction boundary mismatch at dim 0")
+            }
+            Self::CannotInferVIn => f.write_str("cannot infer type of unannotated vin term"),
         }
     }
 }
@@ -135,6 +145,10 @@ impl Ctx {
 
     pub(crate) fn env(&self) -> &[Value] {
         &self.env
+    }
+
+    pub(crate) const fn len(&self) -> usize {
+        self.types.len()
     }
 
     pub fn push(&mut self, ty: Value) -> Value {
@@ -579,6 +593,20 @@ fn infer_inductive(
     term: &Term,
 ) -> Result<(Value, UsageVec), TypeError> {
     match term {
+        Term::VIn { .. } => Err(TypeError::CannotInferVIn),
+        Term::VType {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+        } => ctx.infer_v_type(arena, *dim, *ty0, *ty1, *equiv),
+        Term::VProj {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+            term,
+        } => ctx.infer_v_proj(arena, mode, (*dim, *ty0, *ty1, *equiv, *term)),
         Term::Unit | Term::Void | Term::Bool | Term::Nat => {
             Ok((Value::Universe(Level::zero()), UsageVec::zero(depth)))
         }
@@ -949,6 +977,9 @@ pub fn check(
                 return Err(TypeError::PathBoundaryMismatch);
             }
             Ok(UsageVec::zero(ctx.types.len()))
+        }
+        (Term::VIn { dim, left, right }, _) => {
+            ctx.check_v_in(arena, mode, *dim, *left, *right, expected)
         }
         _ => {
             let check_mode = if matches!(expected, Value::Path { .. }) {

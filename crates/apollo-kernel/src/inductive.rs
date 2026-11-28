@@ -131,6 +131,11 @@ pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveI
             motive: a,
             on_unit: b,
             scrut: c,
+        }
+        | Term::VIn {
+            dim: a,
+            left: b,
+            right: c,
         } => any_mentions(arena, &[*a, *b, *c], target),
         Term::PApp {
             path: a,
@@ -144,6 +149,12 @@ pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveI
             dst: c,
             term: d,
         }
+        | Term::VType {
+            dim: a,
+            ty0: b,
+            ty1: c,
+            equiv: d,
+        }
         | Term::BoolElim {
             motive: a,
             on_true: b,
@@ -156,6 +167,13 @@ pub fn term_mentions_inductive(arena: &TermArena, id: TermId, target: InductiveI
             step: c,
             scrut: d,
         } => any_mentions(arena, &[*a, *b, *c, *d], target),
+        Term::VProj {
+            dim,
+            ty0,
+            ty1,
+            equiv,
+            term,
+        } => any_mentions(arena, &[*dim, *ty0, *ty1, *equiv, *term], target),
         Term::HCom {
             ty,
             src,

@@ -194,6 +194,24 @@ pub enum ExprKind {
         branches: Vec<HComBranch>,
         cap: Box<Expr>,
     },
+    VType {
+        dim: Box<Expr>,
+        ty0: Box<Expr>,
+        ty1: Box<Expr>,
+        equiv: Box<Expr>,
+    },
+    VIn {
+        dim: Box<Expr>,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    VProj {
+        dim: Box<Expr>,
+        ty0: Box<Expr>,
+        ty1: Box<Expr>,
+        equiv: Box<Expr>,
+        term: Box<Expr>,
+    },
     Let {
         mult: MultAst,
         name: String,

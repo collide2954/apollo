@@ -161,6 +161,7 @@ function readInitialSource() {
 }
 
 function initPlayground() {
+  const shell = document.querySelector(".pg-shell");
   const editor = document.getElementById("pg-source");
   const output = document.getElementById("pg-output");
   const status = document.getElementById("pg-status");
@@ -171,9 +172,29 @@ function initPlayground() {
   const omegaBtn = document.getElementById("pg-omega");
   const copyBtn = document.getElementById("pg-copy");
   const shareBtn = document.getElementById("pg-share");
+  const tabEditor = document.getElementById("pg-tab-editor");
+  const tabOutput = document.getElementById("pg-tab-output");
+  const tabDot = document.getElementById("pg-tab-dot");
 
   if (!editor || !output || !status || !meta || !presetSelect) {
     return;
+  }
+
+  function setMobileTab(tabName) {
+    if (!shell || !tabEditor || !tabOutput) {
+      return;
+    }
+    shell.dataset.mobileTab = tabName;
+    const isEditor = tabName === "editor";
+    tabEditor.classList.toggle("active", isEditor);
+    tabEditor.setAttribute("aria-selected", String(isEditor));
+    tabOutput.classList.toggle("active", !isEditor);
+    tabOutput.setAttribute("aria-selected", String(!isEditor));
+  }
+
+  if (tabEditor && tabOutput) {
+    tabEditor.addEventListener("click", () => setMobileTab("editor"));
+    tabOutput.addEventListener("click", () => setMobileTab("output"));
   }
 
   for (const [key, preset] of Object.entries(PRESETS)) {
@@ -182,7 +203,8 @@ function initPlayground() {
     opt.textContent = preset.label;
     presetSelect.appendChild(opt);
   }
-  presetSelect.value = "arithmetic";
+  const initialPreset = new URLSearchParams(window.location.search).get("example");
+  presetSelect.value = initialPreset && PRESETS[initialPreset] ? initialPreset : "arithmetic";
   editor.value = readInitialSource();
 
   let wasmModule = null;
@@ -191,10 +213,13 @@ function initPlayground() {
   function setStatus(kind, label, detail) {
     status.className = `pg-badge ${kind}`;
     status.textContent = label;
+    if (tabDot) {
+      tabDot.className = `pg-dot ${kind}`;
+    }
     meta.textContent = detail;
   }
 
-  function execute(command) {
+  function execute(command, switchTab = false) {
     if (!wasmModule) {
       setStatus("loading", "LOADING WASM", "Wait for the Apollo WebAssembly module to finish loading.");
       return;
@@ -218,10 +243,16 @@ function initPlayground() {
         output.textContent = `playground.ap:${res.line}:${res.column}: error (${res.stage}):\n${res.message}`;
         setStatus("err", `ERROR (${res.stage.toUpperCase()})`, `line ${res.line}, col ${res.column} · ${elapsed} ms`);
       }
+      if (switchTab) {
+        setMobileTab("output");
+      }
     } catch (err) {
       lastRust = "";
       output.textContent = String(err);
       setStatus("err", "RUNTIME ERROR", "WebAssembly execution failed.");
+      if (switchTab) {
+        setMobileTab("output");
+      }
     }
   }
 
@@ -233,10 +264,11 @@ function initPlayground() {
     }
   });
 
-  checkBtn.addEventListener("click", () => execute("check"));
-  buildBtn.addEventListener("click", () => execute("build"));
+  checkBtn.addEventListener("click", () => execute("check", true));
+  buildBtn.addEventListener("click", () => execute("build", true));
 
   omegaBtn.addEventListener("click", () => {
+    setMobileTab("editor");
     const start = editor.selectionStart ?? editor.value.length;
     const end = editor.selectionEnd ?? editor.value.length;
     editor.value = `${editor.value.slice(0, start)}ω${editor.value.slice(end)}`;

@@ -2,25 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Apollo — Quantitative Cartesian Cubical Theorem Prover</title>
   <meta name="description" content="Apollo is an interactive theorem prover and verified systems language in Rust.">
+  <meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="site-header">
     <div class="container header-inner">
-      <a class="brand" href="#top" aria-label="Apollo home">
-        <svg class="emblem" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true">
-          <rect x="4" y="10" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"/>
-          <rect x="14" y="4" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"/>
-          <line x1="4" y1="10" x2="14" y2="4" stroke="currentColor" stroke-width="1.5"/>
-          <line x1="18" y1="10" x2="28" y2="4" stroke="currentColor" stroke-width="1.5"/>
-          <line x1="4" y1="24" x2="14" y2="18" stroke="currentColor" stroke-width="1.5"/>
-          <line x1="18" y1="24" x2="28" y2="18" stroke="currentColor" stroke-width="1.5"/>
-        </svg>
-        <span>APOLLO</span>
-      </a>
+      <div class="header-top">
+        <a class="brand" href="#top" aria-label="Apollo home">
+          <svg class="emblem" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true">
+            <rect x="4" y="10" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"/>
+            <rect x="14" y="4" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"/>
+            <line x1="4" y1="10" x2="14" y2="4" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="18" y1="10" x2="28" y2="4" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="4" y1="24" x2="14" y2="18" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="18" y1="24" x2="28" y2="18" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          <span>APOLLO</span>
+        </a>
+        <a class="mobile-cta" href="#playground">Try Live</a>
+      </div>
       <nav class="nav" aria-label="Primary">
         <a href="#pillars">Architecture</a>
         <a href="#crates">Workspace</a>
@@ -35,7 +40,7 @@
     <section class="hero">
       <div class="container hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow">VERSION 0.9.0 · APACHE-2.0 · MACOS / LINUX / WINDOWS / WASM</p>
+          <p class="eyebrow">VERSION 0.9.0 · APACHE-2.0 · WASM + NATIVE</p>
           <h1>Prove properties. Emit sound Rust.</h1>
           <p class="lead">
             Apollo is an interactive theorem prover and verified systems language in Rust.
@@ -43,8 +48,9 @@
             Apollo erases proof terms and compiles verified programs to clean Rust code.
           </p>
           <div class="actions">
-            <a class="button primary" href="https://github.com/collide2954/apollo">View Repository</a>
-            <a class="button secondary" href="https://collide2954.github.io/type-theory-is-easy/">Read Type Theory Is Easy</a>
+            <a class="button primary" href="#playground">Try Playground</a>
+            <a class="button secondary" href="https://collide2954.github.io/type-theory-is-easy/">Read Book</a>
+            <a class="button secondary" href="https://github.com/collide2954/apollo">GitHub</a>
           </div>
         </div>
 
@@ -168,31 +174,45 @@
           Select an example, edit the Apollo source, and press <code>Ctrl+Enter</code> to extract <code>#![no_std]</code> Rust.
         </p>
 
-        <div class="pg-shell">
+        <div class="pg-shell" data-mobile-tab="editor">
           <div class="pg-toolbar">
             <label class="pg-select-wrap" for="pg-preset">
               <span>Example</span>
               <select id="pg-preset" aria-label="Choose an Apollo example"></select>
             </label>
             <div class="pg-actions">
-              <button id="pg-check" class="button secondary" type="button">Check</button>
-              <button id="pg-build" class="button primary" type="button">Build Rust</button>
-              <button id="pg-omega" class="button secondary" type="button" title="Insert unrestricted multiplicity symbol">Insert ω</button>
-              <button id="pg-copy" class="button secondary" type="button">Copy Output</button>
-              <button id="pg-share" class="button secondary" type="button">Share Link</button>
+              <div class="pg-actions-primary">
+                <button id="pg-build" class="button primary" type="button">Build Rust</button>
+                <button id="pg-check" class="button secondary" type="button">Check</button>
+              </div>
+              <div class="pg-actions-tools">
+                <button id="pg-omega" class="button secondary" type="button" title="Insert unrestricted multiplicity symbol">Insert ω</button>
+                <button id="pg-copy" class="button secondary" type="button">Copy</button>
+                <button id="pg-share" class="button secondary" type="button">Share</button>
+              </div>
             </div>
           </div>
 
+          <div class="pg-tabs" role="tablist" aria-label="Playground views">
+            <button id="pg-tab-editor" class="pg-tab active" type="button" role="tab" aria-selected="true" aria-controls="pg-pane-editor">
+              Apollo Source
+            </button>
+            <button id="pg-tab-output" class="pg-tab" type="button" role="tab" aria-selected="false" aria-controls="pg-pane-output">
+              <span>Output</span>
+              <span id="pg-tab-dot" class="pg-dot loading" aria-hidden="true"></span>
+            </button>
+          </div>
+
           <div class="pg-grid">
-            <div class="pg-pane">
+            <div id="pg-pane-editor" class="pg-pane pg-pane-editor">
               <div class="code-head">
                 <span>playground.ap</span>
                 <span>APOLLO SOURCE</span>
               </div>
-              <textarea id="pg-source" class="pg-editor" spellcheck="false" aria-label="Apollo source code editor"></textarea>
+              <textarea id="pg-source" class="pg-editor" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Apollo source code editor"></textarea>
             </div>
 
-            <div class="pg-pane">
+            <div id="pg-pane-output" class="pg-pane pg-pane-output">
               <div class="code-head">
                 <span>output.rs</span>
                 <span id="pg-status" class="pg-badge loading">LOADING WASM</span>
@@ -203,7 +223,7 @@
 
           <div class="pg-footer">
             <span id="pg-meta">Initializing WebAssembly module...</span>
-            <span>Shortcut: <code>Ctrl+Enter</code> / <code>Cmd+Enter</code></span>
+            <span class="pg-shortcut">Shortcut: <code>Ctrl+Enter</code> / <code>Cmd+Enter</code></span>
           </div>
         </div>
       </div>

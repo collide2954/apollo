@@ -154,6 +154,11 @@ impl Ctx {
         &self.env
     }
 
+    #[must_use]
+    pub fn types(&self) -> &[Value] {
+        &self.types
+    }
+
     pub(crate) const fn len(&self) -> usize {
         self.types.len()
     }
@@ -1245,6 +1250,10 @@ mod tests {
         let mut ctx = Ctx::new();
         let erased_fst = infer(&arena, &mut ctx, Multiplicity::Zero, bad_fst);
         assert!(erased_fst.is_ok());
+        assert!(ctx.types().is_empty());
+        let _ = ctx.push(Value::Nat);
+        let _ = ctx.push_dim();
+        assert!(matches!(ctx.types(), [Value::Nat, Value::Interval]));
 
         let ok_snd = arena.snd(pkg_ann);
         let snd_ty = infer_closed(&arena, ok_snd);

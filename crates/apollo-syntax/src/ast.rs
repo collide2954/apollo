@@ -240,6 +240,7 @@ pub enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    Auto,
     Match {
         scrut: Box<Expr>,
         motive: Option<(String, Box<Expr>)>,

@@ -735,6 +735,7 @@ impl<'a> Parser<'a> {
             TokenKind::False => Ok(self.single_token_expr(ExprKind::False, token.span)),
             TokenKind::Nat => Ok(self.single_token_expr(ExprKind::Nat, token.span)),
             TokenKind::Zero => Ok(self.single_token_expr(ExprKind::Zero, token.span)),
+            TokenKind::Auto => Ok(self.single_token_expr(ExprKind::Auto, token.span)),
             TokenKind::Succ => self.parse_succ(),
             TokenKind::Match => self.parse_match(),
             TokenKind::LBrace => self.parse_block(),
@@ -1540,6 +1541,18 @@ mod tests {
         ));
         assert!(parse_expr("x +").is_err());
         assert!(parse_expr("+ x").is_err());
+    }
+
+    #[test]
+    fn parses_auto_as_expression_atom() {
+        let auto = parse_expr("auto");
+        assert!(auto.is_ok_and(|e| e.kind == ExprKind::Auto && e.span == crate::Span::new(0, 4)));
+        let in_arm = parse_expr("match n { zero => auto, succ(k, ih) => auto }");
+        assert!(matches!(
+            in_arm.map(|e| e.kind),
+            Ok(ExprKind::Match { arms, .. })
+                if arms.len() == 2 && arms.iter().all(|a| a.body.kind == ExprKind::Auto)
+        ));
     }
 
     #[test]

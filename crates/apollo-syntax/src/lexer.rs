@@ -55,6 +55,7 @@ pub enum TokenKind {
     And,
     Or,
     Plus,
+    Auto,
     Eof,
 }
 
@@ -265,6 +266,7 @@ impl<'a> Lexer<'a> {
             "many" => TokenKind::Many,
             "top" => TokenKind::Top,
             "bot" => TokenKind::Bot,
+            "auto" => TokenKind::Auto,
             ident => TokenKind::Ident(ident.to_owned()),
         }
     }
@@ -318,6 +320,10 @@ mod tests {
             assert_eq!(kinds[0], TokenKind::Sigma);
             assert!(kinds.contains(&TokenKind::Pipe));
         }
+
+        let auto = lex("auto autos");
+        assert!(auto.is_ok_and(|list| list[0].kind == TokenKind::Auto
+            && list[1].kind == TokenKind::Ident("autos".to_owned())));
 
         let ind = lex("Unit Void Bool Nat true false zero succ match as");
         assert!(ind.is_ok());

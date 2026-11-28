@@ -137,6 +137,8 @@ const ARITH_SRC: &str = r"
     }
     fn plus(1 a: Nat, 1 b: Nat) -> Nat { a + b }
     fn triple(ω n: Nat) -> Nat { n + n + n }
+    theorem plus_comm(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, a + b, b + a) { auto }
+    fn refined(1 n: Nat) -> Sigma(1 m: Nat, Path(_ => Nat, m + zero, m)) { (n, auto) }
 ";
 
 const ARITH_DRIVER: &str = r#"
@@ -161,6 +163,7 @@ const ARITH_DRIVER: &str = r#"
         assert_eq!(apollo_arith::plus(17, 25), 42);
         assert_eq!(apollo_arith::plus(0, 9), 9);
         assert_eq!(apollo_arith::triple(14), 42);
+        assert_eq!(apollo_arith::refined(42), 42);
     }
 "#;
 

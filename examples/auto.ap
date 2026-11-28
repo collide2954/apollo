@@ -1,0 +1,47 @@
+fn double(ω n: Nat) -> Nat {
+    n + n
+}
+
+theorem add_comm(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, a + b, b + a) {
+    auto
+}
+
+theorem add_assoc(0 a: Nat, 0 b: Nat, 0 c: Nat) -> Path(_ => Nat, (a + b) + c, a + (b + c)) {
+    auto
+}
+
+theorem double_succ(0 n: Nat) -> Path(_ => Nat, double(succ(n)), succ(succ(double(n)))) {
+    auto
+}
+
+theorem add_zero_right(0 n: Nat) -> Path(_ => Nat, n + zero, n) {
+    match n as |k| Path(_ => Nat, k + zero, k) {
+        zero => auto,
+        succ(_, ih) => auto,
+    }
+}
+
+theorem rewrite_under_map(
+    0 A: Type 0,
+    0 f: (ω _: Nat) -> A,
+    0 a: Nat,
+    0 b: Nat,
+    0 p: Path(_ => Nat, a + b, b),
+) -> Path(_ => A, f(b + a), f(b)) {
+    auto
+}
+
+theorem chain(
+    0 A: Type 0,
+    0 x: A,
+    0 y: A,
+    0 z: A,
+    0 p: Path(_ => A, x, y),
+    0 q: Path(_ => A, z, y),
+) -> Path(_ => A, x, z) {
+    auto
+}
+
+fn sum_with_proof(1 a: Nat, 1 b: Nat) -> Sigma(1 s: Nat, Path(_ => Nat, s, s + zero)) {
+    (a + b, auto)
+}

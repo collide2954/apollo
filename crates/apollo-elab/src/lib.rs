@@ -88,6 +88,17 @@ pub enum ElabError {
         err: TypeError,
         span: Span,
     },
+    AutoUnsupported {
+        message: String,
+        span: Span,
+    },
+    AutoFailed {
+        lhs: String,
+        rhs: String,
+        lhs_normal: String,
+        rhs_normal: String,
+        span: Span,
+    },
 }
 
 impl From<ParseError> for ElabError {
@@ -107,7 +118,9 @@ impl ElabError {
             | Self::UnsupportedUnannotatedLet { span }
             | Self::InvalidMatch { span, .. }
             | Self::InvalidData { span, .. }
-            | Self::Type { span, .. } => *span,
+            | Self::Type { span, .. }
+            | Self::AutoUnsupported { span, .. }
+            | Self::AutoFailed { span, .. } => *span,
         }
     }
 
@@ -133,6 +146,17 @@ impl fmt::Display for ElabError {
             Self::InvalidMatch { message, .. } => write!(f, "invalid match: {message}"),
             Self::InvalidData { message, .. } => write!(f, "invalid data declaration: {message}"),
             Self::Type { decl, err, .. } => write!(f, "in '{decl}': {err}"),
+            Self::AutoUnsupported { message, .. } => write!(f, "auto: {message}"),
+            Self::AutoFailed {
+                lhs,
+                rhs,
+                lhs_normal,
+                rhs_normal,
+                ..
+            } => write!(
+                f,
+                "auto could not prove {lhs} = {rhs}; normal forms are {lhs_normal} and {rhs_normal}"
+            ),
         }
     }
 }
@@ -305,11 +329,7 @@ impl Elaborator {
                 first,
                 second,
             } => self.elab_sigma(*mult, name, first, second),
-            ExprKind::Pair { first, second } => {
-                let first_id = self.elab_expr(first, None)?;
-                let second_id = self.elab_expr(second, None)?;
-                Ok(self.arena.pair(first_id, second_id))
-            }
+            ExprKind::Pair { first, second } => self.elab_pair(first, second, expected),
             ExprKind::Fst(inner) => {
                 let pair_id = self.elab_expr(inner, None)?;
                 Ok(self.arena.fst(pair_id))
@@ -399,6 +419,7 @@ impl Elaborator {
                 fields,
             } => self.elab_struct_lit(type_name, type_args, fields, expected, expr.span),
             ExprKind::Field { target, name } => self.elab_field(target, name, expr.span),
+            ExprKind::Auto => self.elab_auto(expected, expr.span),
             ExprKind::VType {
                 dim,
                 ty0,
@@ -436,6 +457,59 @@ impl Elaborator {
                 Ok(self.arena.v_proj(dim_id, ty0_id, ty1_id, equiv_id, term_id))
             }
             _ => Ok(self.arena.tt()),
+        }
+    }
+
+    fn elab_pair(
+        &mut self,
+        first: &Expr,
+        second: &Expr,
+        expected: Option<&Value>,
+    ) -> Result<TermId, ElabError> {
+        let (first_ty, second_cl) = match expected {
+            Some(Value::Sigma { first, second, .. }) => (Some((**first).clone()), Some(second)),
+            _ => (None, None),
+        };
+        let first_id = self.elab_expr(first, first_ty.as_ref())?;
+        let second_ty = match second_cl {
+            Some(closure) => {
+                let first_val = self.eval_in_ctx(first_id, first.span)?;
+                closure.apply(&self.arena, first_val).ok()
+            }
+            None => None,
+        };
+        let second_id = self.elab_expr(second, second_ty.as_ref())?;
+        Ok(self.arena.pair(first_id, second_id))
+    }
+
+    fn elab_auto(&mut self, expected: Option<&Value>, span: Span) -> Result<TermId, ElabError> {
+        let Some(goal) = expected else {
+            return Err(ElabError::AutoUnsupported {
+                message: "auto requires a known Path goal type".to_owned(),
+                span,
+            });
+        };
+        match apollo_auto::prove(&mut self.arena, &mut self.ctx, goal) {
+            Ok(term) => Ok(term),
+            Err(apollo_auto::AutoError::Unproved {
+                lhs,
+                rhs,
+                lhs_normal,
+                rhs_normal,
+            }) => {
+                let show = |id| apollo_auto::render::render(&self.arena, id, &self.locals);
+                Err(ElabError::AutoFailed {
+                    lhs: show(lhs),
+                    rhs: show(rhs),
+                    lhs_normal: show(lhs_normal),
+                    rhs_normal: show(rhs_normal),
+                    span,
+                })
+            }
+            Err(other) => Err(ElabError::AutoUnsupported {
+                message: other.to_string(),
+                span,
+            }),
         }
     }
 
@@ -1615,6 +1689,217 @@ mod tests {
                 "expected type error for: {bad}"
             );
         }
+    }
+
+    #[test]
+    fn proves_linear_nat_identities_with_auto() {
+        let src = r"
+            theorem comm(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, a + b, b + a) { auto }
+            theorem assoc(0 a: Nat, 0 b: Nat, 0 c: Nat) -> Path(_ => Nat, (a + b) + c, a + (b + c)) {
+                auto
+            }
+            theorem unit_right(0 a: Nat) -> Path(_ => Nat, a + zero, a) { auto }
+            theorem shift(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, succ(a) + b, a + succ(b)) { auto }
+            theorem spread(0 a: Nat, 0 b: Nat, 0 c: Nat) -> Path(
+                _ => Nat,
+                succ(c) + (b + succ(a + c)),
+                (a + c) + (succ(succ(b)) + c)
+            ) {
+                auto
+            }
+            theorem numerals() -> Path(_ => Nat, succ(zero) + succ(zero), succ(succ(zero))) { auto }
+            theorem by_cases(0 n: Nat) -> Path(_ => Nat, n + zero, n) {
+                match n as |x| Path(_ => Nat, x + zero, x) {
+                    zero => auto,
+                    succ(k, ih) => auto,
+                }
+            }
+            fn pred_or(ω n: Nat, ω m: Nat) -> Nat { match n { zero => m, succ(k, _) => succ(k) } }
+            fn bump_or(ω n: Nat, ω m: Nat) -> Nat { match n { zero => m, succ(_, _) => succ(m) } }
+            fn dbl(ω n: Nat) -> Nat { match n { zero => zero, succ(_, ih) => succ(succ(ih)) } }
+            theorem pred_atom(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, pred_or(a, b) + zero, pred_or(a, b)) {
+                auto
+            }
+            theorem bump_atom(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, bump_or(a, b) + zero, bump_or(a, b)) {
+                auto
+            }
+            theorem dbl_atom(0 a: Nat) -> Path(_ => Nat, dbl(a) + succ(zero), succ(dbl(a))) { auto }
+            fn refined(1 n: Nat) -> Sigma(1 m: Nat, Path(_ => Nat, m + zero, m)) { (n, auto) }
+            fn tagged(0 n: Nat) -> Sigma(1 _: Nat, Path(_ => Nat, n + zero, n)) { (zero, auto) }
+        ";
+        let checked = check_source(src);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+        if let Ok(module) = checked {
+            assert_eq!(module.decls.len(), 15);
+        }
+        assert!(matches!(
+            check_source(
+                "fn bad(1 n: Nat) -> Sigma(1 m: Nat, Path(_ => Nat, m, n)) { (zero, auto) }"
+            ),
+            Err(ElabError::AutoFailed { lhs, rhs, .. }) if lhs == "zero" && rhs == "n"
+        ));
+    }
+
+    #[test]
+    fn proves_congruence_goals_from_path_hypotheses_with_auto() {
+        let src = r"
+            theorem refl_bool() -> Path(_ => Bool, true, true) { auto }
+            theorem ap2(
+                0 A: Type 0,
+                0 f: (ω _: A) -> A,
+                0 x: A,
+                0 y: A,
+                0 p: Path(_ => A, x, y),
+            ) -> Path(_ => A, f(f(x)), f(f(y))) {
+                auto
+            }
+            theorem chain(
+                0 A: Type 0,
+                0 x: A,
+                0 y: A,
+                0 z: A,
+                0 p: Path(_ => A, x, y),
+                0 q: Path(_ => A, z, y),
+            ) -> Path(_ => A, x, z) {
+                auto
+            }
+            theorem binary(
+                0 A: Type 0,
+                0 g: (ω _: A, ω _: A) -> A,
+                0 x: A,
+                0 y: A,
+                0 p: Path(_ => A, y, x),
+            ) -> Path(_ => A, g(x, y), g(y, x)) {
+                auto
+            }
+            enum Box(0 A: Type 0) { Mk(1 v: A) }
+            theorem ctor_cong(
+                0 x: Nat,
+                0 y: Nat,
+                0 p: Path(_ => Nat, x, y),
+            ) -> Path(_ => Box(Nat), Box::Mk(Nat, x), Box::Mk(Nat, y)) {
+                auto
+            }
+            theorem mixed(
+                0 a: Nat,
+                0 b: Nat,
+                0 c: Nat,
+                0 p: Path(_ => Nat, a, b),
+            ) -> Path(_ => Nat, a + c, c + b) {
+                auto
+            }
+            theorem through_sum(
+                0 a: Nat,
+                0 b: Nat,
+                0 c: Nat,
+                0 p: Path(_ => Nat, a + b, c),
+            ) -> Path(_ => Nat, b + a, c) {
+                auto
+            }
+            theorem under_map(
+                0 A: Type 0,
+                0 f: (ω _: Nat) -> A,
+                0 a: Nat,
+                0 b: Nat,
+                0 p: Path(_ => Nat, a + b, b),
+            ) -> Path(_ => A, f(b + a), f(b)) {
+                auto
+            }
+            theorem under_succ(
+                0 f: (ω _: Nat) -> Nat,
+                0 a: Nat,
+                0 b: Nat,
+                0 p: Path(_ => Nat, b + a, f(a)),
+            ) -> Path(_ => Nat, succ(a + b), succ(f(a))) {
+                auto
+            }
+        ";
+        let checked = check_source(src);
+        assert!(checked.is_ok(), "unexpected error: {:?}", checked.err());
+        if let Ok(module) = checked {
+            assert_eq!(module.decls.len(), 9);
+        }
+    }
+
+    #[test]
+    fn reports_auto_failures_with_named_normal_forms() {
+        let unprovable =
+            "theorem bad(0 a: Nat, 0 b: Nat) -> Path(_ => Nat, a + b, succ(a)) { auto }";
+        let err = check_source(unprovable).err();
+        assert!(
+            matches!(
+                &err,
+                Some(ElabError::AutoFailed { lhs, rhs, lhs_normal, rhs_normal, span })
+                    if lhs == "a + b"
+                        && rhs == "succ(a)"
+                        && lhs_normal.contains('a')
+                        && lhs_normal.contains('b')
+                        && lhs_normal == "a + (b + zero)"
+                        && rhs_normal == "a + succ(zero)"
+                        && span.start == 66
+            ),
+            "unexpected: {err:?}"
+        );
+        if let Some(e) = err {
+            let text = e.to_string();
+            assert!(text.contains("auto could not prove a + b = succ(a)"));
+            assert!(text.contains("normal forms are"));
+        }
+
+        let wrong_bool = "theorem bad() -> Path(_ => Bool, true, false) { auto }";
+        assert!(matches!(
+            check_source(wrong_bool),
+            Err(ElabError::AutoFailed { lhs_normal, rhs_normal, .. })
+                if lhs_normal == "true" && rhs_normal == "false"
+        ));
+
+        let unused_hyp = r"
+            theorem bad(0 A: Type 0, 0 x: A, 0 y: A, 0 z: A, 0 p: Path(_ => A, x, y)) -> Path(_ => A, x, z) {
+                auto
+            }
+        ";
+        assert!(matches!(
+            check_source(unused_hyp),
+            Err(ElabError::AutoFailed { lhs, rhs, .. }) if lhs == "x" && rhs == "z"
+        ));
+
+        for (src, needle) in [
+            (
+                "fn bad(1 n: Nat) -> Nat { auto }",
+                "non-dependent Path goal",
+            ),
+            (
+                "fn bad(1 n: Nat) -> Sigma(1 _: Nat, Nat) { (auto, n) }",
+                "non-dependent Path goal",
+            ),
+            ("fn bad() -> Nat { (auto).0 }", "known Path goal"),
+        ] {
+            let err = check_source(src).err();
+            assert!(
+                matches!(&err, Some(ElabError::AutoUnsupported { message, .. }) if message.contains(needle)),
+                "unexpected for {src}: {err:?}"
+            );
+            if let Some(e) = err {
+                assert!(e.to_string().starts_with("auto: "));
+                assert_ne!(e.span(), apollo_syntax::Span::new(0, 0));
+            }
+        }
+
+        let dependent = r"
+            fn not(1 b: Bool) -> Bool { match b { true => false, false => true } }
+            theorem not_not(0 b: Bool) -> Path(_ => Bool, not(not(b)), b) {
+                match b as |x| Path(_ => Bool, not(not(x)), x) { true => <i> true, false => <i> false }
+            }
+            theorem Equiv(0 A: Type 0, 0 B: Type 0) -> Type 0 {
+                Sigma(0 f: (1 _: A) -> B, Sigma(0 g: (1 _: B) -> A, Sigma(0 sec: (0 b: B) -> Path(_ => B, f(g(b)), b), (0 a: A) -> Path(_ => A, g(f(a)), a))))
+            }
+            theorem not_equiv() -> Equiv(Bool, Bool) { (not, (not, (not_not, not_not))) }
+            theorem flip() -> Path(i => V(i, Bool, Bool, not_equiv), true, false) { auto }
+        ";
+        assert!(matches!(
+            check_source(dependent),
+            Err(ElabError::AutoUnsupported { message, .. }) if message.contains("non-dependent")
+        ));
     }
 
     #[test]

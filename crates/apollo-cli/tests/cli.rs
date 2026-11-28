@@ -183,3 +183,35 @@ fn binary_checks_and_builds_arithmetic_and_data_examples() {
         assert!(!emitted.contains("append_nil_right"));
     }
 }
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn binary_checks_and_builds_auto_example() {
+    let bin = env!("CARGO_BIN_EXE_apollo");
+    let auto_ap = examples_dir().join("auto.ap");
+    let check = Command::new(bin).arg("check").arg(&auto_ap).output();
+    assert!(check.is_ok());
+    if let Ok(output) = check {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("checked 8 declarations"));
+    }
+
+    let build = Command::new(bin).arg("build").arg(&auto_ap).output();
+    assert!(build.is_ok());
+    if let Ok(output) = build {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let emitted = String::from_utf8_lossy(&output.stdout);
+        assert!(emitted.contains("pub fn double(n: u128) -> u128"));
+        assert!(emitted.contains("pub fn sum_with_proof(a: u128, b: u128) -> u128"));
+        assert!(!emitted.contains("add_comm"));
+        assert!(!emitted.contains("rewrite_under_map"));
+    }
+}
